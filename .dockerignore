@@ -1,0 +1,11 @@
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/frontend/dist
+**/.git
+**/config.json
+**/data/chats.jsonl
+**/.coverage
+**/htmlcov
+**/*.egg-info

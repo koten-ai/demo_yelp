@@ -1,0 +1,58 @@
+{
+  "build_version": "0.1.0",
+  "_comment": "LocalAI yelp-demo config. Copy to config.json and fill in your keys.",
+
+  "zeus": {
+    "url": "http://host.docker.internal:8080",
+    "auth_mode": "basic",
+    "username": "demo_1",
+    "password": "",
+    "bearer_token": "",
+    "session_id": "",
+    "scope_credentials": {
+      "yelp-demo/_default": { "username": "demo_1", "password": "" }
+    },
+    "scope_contracts": {
+      "yelp-demo/_default": {
+        "auto": {
+          "contract_id": "auto_v4",
+          "contract_hash": ""
+        },
+        "analytics": {
+          "contract_id": "analytics_v4",
+          "contract_hash": ""
+        }
+      }
+    },
+    "enable_durable_sessions": true
+  },
+
+  "llm_provider": {
+    "label": "xAI Grok",
+    "base_url": "https://api.x.ai/v1",
+    "api_key": "",
+    "models": [
+      "grok-4-1-fast-non-reasoning",
+      "grok-4-1-fast-reasoning",
+      "grok-4",
+      "grok-3-mini"
+    ]
+  },
+
+  "chat_requests_sync": {
+    "scopes": "from_contracts",
+    "modes": ["auto", "analytics"],
+    "on_startup": true
+  },
+
+  "default_api_version": "v2",
+  "default_mode": "auto",
+  "default_sample": "yelp-demo",
+  "samples": {
+    "yelp-demo": {
+      "bucket": "yelp-demo",
+      "scope": "_default",
+      "collection": "_default"
+    }
+  }
+}

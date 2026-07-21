@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+config.json
+data/chats.jsonl
+data/chat_requests/**
+!data/chat_requests/.gitkeep
+frontend/node_modules/
+frontend/dist/
+*.egg-info/
+dist/
+build/
+.env
+.DS_Store
