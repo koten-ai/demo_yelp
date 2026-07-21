@@ -39,7 +39,7 @@ export default function AppShell() {
             </NavLink>
           </nav>
           <div className="text-xs text-on-surface-variant font-mono hidden sm:block">
-            Powered by Zeus
+            Powered by Zeus · v{__APP_VERSION__}
           </div>
         </div>
       </header>

@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+# LocalAI SPA image (Vite build → nginx).
+#
+# Build from this demo directory:
+#   docker build -f Dockerfile.frontend -t local-guide-frontend .
+#
+# Or from monorepo parent:
+#   docker build -f demo_yelp/Dockerfile.frontend -t local-guide-frontend demo_yelp
+#
+# Pairs with Dockerfile.backend. nginx serves the SPA and reverse-proxies
+# /api and /static to BACKEND_UPSTREAM (default http://backend:5000).
+
+FROM node:20-alpine AS build
+WORKDIR /fe
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=build /fe/dist /usr/share/nginx/html
+COPY docker/nginx-default.conf.template /etc/nginx/templates/default.conf.template
+
+# Compose/K8s service name for the API container (no trailing slash).
+ENV BACKEND_UPSTREAM=http://backend:5000
+# Only substitute our knobs — leave nginx $host / $uri alone.
+ENV NGINX_ENVSUBST_FILTER=BACKEND_
+
+EXPOSE 80

@@ -1,9 +1,15 @@
+# Local / staging-shaped stack: API + nginx SPA.
+#   docker compose up --build
+# Vite HMR (optional):
+#   docker compose --profile dev up --build
+
 services:
-  local-guide:
+  backend:
     build:
       context: ..
-      dockerfile: demo_yelp/Dockerfile
-    container_name: local-guide
+      dockerfile: demo_yelp/Dockerfile.backend
+    image: local-guide-backend:local
+    container_name: local-guide-backend
     ports:
       - "5000:5000"
     environment:
@@ -20,3 +26,44 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: local-guide-frontend:local
+    container_name: local-guide-frontend
+    ports:
+      # Host 3000 — avoid clashing with local Zeus on :8080.
+      - "3000:80"
+    environment:
+      BACKEND_UPSTREAM: "http://backend:5000"
+      NGINX_ENVSUBST_FILTER: "BACKEND_"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Vite HMR — bind-mounts source; does not use Dockerfile.frontend.
+  #   docker compose --profile dev up --build
+  frontend-dev:
+    profiles: ["dev"]
+    image: node:20-alpine
+    container_name: local-guide-frontend-dev
+    working_dir: /fe
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_PROXY: "http://backend:5000"
+      VITE_USE_POLLING: "1"
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/fe
+      - frontend_node_modules:/fe/node_modules
+    command: >-
+      sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  frontend_node_modules:
