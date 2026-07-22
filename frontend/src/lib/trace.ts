@@ -11,9 +11,24 @@ declare global {
 
 let toolOrderInjected = false;
 
+/** Cache-bust vendored widget so rebuilds replace browser cache. */
+const TRACE_SCRIPT_SRC = `/static/zeus_client_chat_trace.js?v=${encodeURIComponent(
+  import.meta.env.VITE_TRACE_WIDGET_VERSION || import.meta.env.VITE_APP_VERSION || "0.1.0"
+)}`;
+
+const DEFAULT_HUB_BASE_URL =
+  (import.meta.env.VITE_HUB_BASE_URL as string | undefined) || "http://zeus-dev.local:9091";
+
 export function ensureTraceScript() {
   if (typeof window === "undefined") return;
   if (!window.ZeusTraceConfig) window.ZeusTraceConfig = {};
+
+  // Hub base must be present before first appendTraceCard (not only after tool-order).
+  window.ZeusTraceConfig = {
+    ...(window.ZeusTraceConfig || {}),
+    hubBaseUrl:
+      (window.ZeusTraceConfig as { hubBaseUrl?: string }).hubBaseUrl || DEFAULT_HUB_BASE_URL,
+  };
 
   if (!toolOrderInjected) {
     toolOrderInjected = true;
@@ -23,6 +38,8 @@ export function ensureTraceScript() {
         window.ZeusTraceConfig = {
           ...(window.ZeusTraceConfig || {}),
           toolOrder: order,
+          hubBaseUrl:
+            (window.ZeusTraceConfig as { hubBaseUrl?: string })?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
         };
       })
       .catch(() => {
@@ -33,7 +50,7 @@ export function ensureTraceScript() {
   if (document.getElementById("zeus-trace-script")) return;
   const s = document.createElement("script");
   s.id = "zeus-trace-script";
-  s.src = "/static/zeus_client_chat_trace.js";
+  s.src = TRACE_SCRIPT_SRC;
   s.async = true;
   document.body.appendChild(s);
 }
