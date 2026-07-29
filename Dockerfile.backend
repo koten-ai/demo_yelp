@@ -1,17 +1,73 @@
 # syntax=docker/dockerfile:1
-# LocalAI API image (FastAPI + kotenai-zeus-client).
+# LocalAI API image (FastAPI + kotenai-zeus-client @ 0.2.1-alpha).
 #
-# Build from monorepo parent (needs sibling zeus_client_python):
-#   docker build -f demo_yelp/Dockerfile.backend -t local-guide-backend .
+# Release pin (default) — build from this directory with BuildKit + SSH agent
+# (private repo koten-ai/zeus_client_python):
 #
-# Staging/prod: run this service alone behind your edge proxy, or pair with
-# Dockerfile.frontend (nginx SPA that reverse-proxies /api and /static here).
+#   cd demo_yelp
+#   DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend -t local-guide-backend .
+#
+# Override the client ref:
+#   --build-arg ZEUS_CLIENT_GIT_REF=0.2.1-alpha
+#
+# Monorepo offline fallback (no git auth) — build from monorepo parent and
+# install the sibling checkout instead of the git tag:
+#
+#   cd koten-ai
+#   DOCKER_BUILDKIT=1 docker build \
+#     -f demo_yelp/Dockerfile.backend \
+#     --target monorepo \
+#     -t local-guide-backend \
+#     .
 
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 WORKDIR /app
 
-# Preinstall path dep; pyproject still lists file:../zeus_client_python which
-# does not exist in the image layout — install app with --no-deps (kit pattern).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p -m 0700 /root/.ssh \
+    && ssh-keyscan -t rsa,ecdsa,ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# release: install kotenai-zeus-client from GitHub tag (default image)
+# Build context: demo_yelp/
+# ---------------------------------------------------------------------------
+FROM base AS release
+
+ARG ZEUS_CLIENT_GIT_REF=0.2.1-alpha
+ARG ZEUS_CLIENT_GIT_URL=ssh://git@github.com/koten-ai/zeus_client_python.git
+
+COPY pyproject.toml ./
+COPY src ./src
+COPY data ./data
+COPY config.example.json ./
+
+RUN --mount=type=ssh \
+    pip install --no-cache-dir \
+        "git+${ZEUS_CLIENT_GIT_URL}@${ZEUS_CLIENT_GIT_REF}" \
+    && pip install --no-cache-dir \
+        "fastapi==0.115.6" \
+        "uvicorn[standard]==0.34.0" \
+        "httpx==0.28.1" \
+        "python-multipart==0.0.20" \
+    && pip install --no-cache-dir --no-deps -e . \
+    && python -c "from importlib.metadata import version; v=version('kotenai-zeus-client'); print(f'kotenai-zeus-client={v}'); assert v.startswith('0.2.'), v"
+
+ENV PORT=5000
+ENV ZEUS_CLIENT_CONFIG_DIR=/app
+ENV ZEUS_CHAT_REQUESTS_DIR=/app/data/chat_requests
+ENV CHAT_LOG_PATH=/app/data/chats.jsonl
+
+EXPOSE 5000
+CMD ["python", "-m", "local_guide"]
+
+# ---------------------------------------------------------------------------
+# monorepo: install sibling zeus_client_python from build context parent
+# Build context: koten-ai/  target: monorepo
+# ---------------------------------------------------------------------------
+FROM base AS monorepo
+
 COPY zeus_client_python /tmp/zeus_client_python
 COPY demo_yelp/pyproject.toml ./
 COPY demo_yelp/src ./src
@@ -25,7 +81,8 @@ RUN pip install --no-cache-dir /tmp/zeus_client_python \
         "httpx==0.28.1" \
         "python-multipart==0.0.20" \
     && pip install --no-cache-dir --no-deps -e . \
-    && rm -rf /tmp/zeus_client_python
+    && rm -rf /tmp/zeus_client_python \
+    && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client'))"
 
 ENV PORT=5000
 ENV ZEUS_CLIENT_CONFIG_DIR=/app

@@ -1,6 +1,6 @@
 # LocalAI (Yelp Demo)
 
-Natural-language local business discovery over the Couchbase **`yelp-demo`** bucket, powered by [Zeus](https://github.com/koten-ai) and [`kotenai-zeus-client`](../zeus_client_python) (`run_agent`). React SPA UI follows Stitch designs in `../stitch_ai_local_guide/`.
+Natural-language local business discovery over the Couchbase **`yelp-demo`** bucket, powered by [Zeus](https://github.com/koten-ai) and [`kotenai-zeus-client` **0.2.1-alpha**](https://github.com/koten-ai/zeus_client_python/releases/tag/0.2.1-alpha) (`run_agent`). React SPA UI follows Stitch designs in `../stitch_ai_local_guide/`.
 
 ## Features
 
@@ -24,7 +24,11 @@ cd demo_yelp
 cp config.example.json config.json
 # edit config.json: llm_provider.api_key, zeus url/password
 python3 -m venv .venv && source .venv/bin/activate
+# Pulls kotenai-zeus-client from git tag 0.2.1-alpha (SSH access to private repo).
 pip install -e ".[dev]"
+# Optional local client override while developing the library:
+#   pip install -e ../zeus_client_python
+python -c "from importlib.metadata import version; print(version('kotenai-zeus-client'))"  # expect 0.2.1
 python -m local_guide
 ```
 
@@ -43,7 +47,7 @@ Images are split for staging/production reuse:
 
 | File | Image role |
 |------|------------|
-| `Dockerfile.backend` | FastAPI + Zeus client (build context: monorepo parent) |
+| `Dockerfile.backend` | FastAPI + **kotenai-zeus-client @ `0.2.1-alpha`** (default `target: release`) |
 | `Dockerfile.frontend` | Vite build + nginx SPA; proxies `/api` + `/static` → API |
 
 ```bash
@@ -51,10 +55,12 @@ cd demo_yelp
 cp config.example.json config.json   # fill keys
 
 # Local stack (API :5000, nginx UI :3000)
-docker compose up --build
+# Backend build needs SSH agent access to github.com/koten-ai/zeus_client_python
+eval "$(ssh-agent -s)" && ssh-add   # if needed
+DOCKER_BUILDKIT=1 docker compose up --build
 
 # Optional Vite HMR on :5173
-docker compose --profile dev up --build
+DOCKER_BUILDKIT=1 docker compose --profile dev up --build
 ```
 
 - UI (nginx / staging-shaped): http://localhost:3000  
@@ -66,10 +72,16 @@ docker compose --profile dev up --build
 ### Build images alone (CI / staging / prod)
 
 ```bash
-# From monorepo parent (koten-ai/)
-docker build -f demo_yelp/Dockerfile.backend -t local-guide-backend:TAG .
+# Release pin (default) — from this directory; requires BuildKit + SSH to private client repo
+cd demo_yelp
+DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend -t local-guide-backend:TAG .
 
-# From this directory
+# Offline monorepo fallback — from monorepo parent; installs sibling checkout (not the git tag)
+cd ..
+DOCKER_BUILDKIT=1 docker build -f demo_yelp/Dockerfile.backend --target monorepo \
+  -t local-guide-backend:TAG .
+
+# Frontend — from demo_yelp/
 docker build -f Dockerfile.frontend -t local-guide-frontend:TAG .
 ```
 

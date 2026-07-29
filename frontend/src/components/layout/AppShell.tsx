@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { fetchHealth } from "../../api/client";
 import { ensureTraceScript } from "../../lib/trace";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -8,8 +9,24 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
   }`;
 
 export default function AppShell() {
+  // Installed kotenai-zeus-client (zeus_client_python) — not the SPA package version.
+  const [zeusClientVersion, setZeusClientVersion] = useState<string | null>(null);
+
   useEffect(() => {
     ensureTraceScript();
+    let cancelled = false;
+    fetchHealth()
+      .then((h) => {
+        if (!cancelled && h?.zeus_client_version) {
+          setZeusClientVersion(h.zeus_client_version);
+        }
+      })
+      .catch(() => {
+        /* keep null; chrome still renders without a version pin */
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -39,7 +56,9 @@ export default function AppShell() {
             </NavLink>
           </nav>
           <div className="text-xs text-on-surface-variant font-mono hidden sm:block">
-            Powered by Zeus · v{__APP_VERSION__}
+            {zeusClientVersion
+              ? `Powered by Zeus · v${zeusClientVersion}`
+              : "Powered by Zeus"}
           </div>
         </div>
       </header>

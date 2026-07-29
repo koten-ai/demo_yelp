@@ -22,10 +22,31 @@ configure_zeus_client()
 class SearchBody(BaseModel):
     query: str = ""
     chat_id: str | None = None
+    # False = landing/results cheap path; True = Ask AI insight synthesis (0.2.1+).
+    ai_process_result: bool = False
 
 
 class InsightBody(BaseModel):
     chat_id: str | None = None
+
+
+def zeus_client_version() -> str:
+    """Installed kotenai-zeus-client (zeus_client_python) package version."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("kotenai-zeus-client")
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        import zeus_client
+
+        return str(getattr(zeus_client, "__version__", "unknown") or "unknown")
+    except Exception:
+        return "unknown"
 
 
 def create_app() -> FastAPI:
@@ -59,14 +80,22 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"ok": True}
+        return {
+            "ok": True,
+            # Running zeus_client_python / kotenai-zeus-client — UI chrome source of truth.
+            "zeus_client_version": zeus_client_version(),
+        }
 
     @app.post("/api/search")
     async def api_search(body: SearchBody):
         query = (body.query or "").strip()
         if not query:
             raise HTTPException(status_code=400, detail={"error": "empty query"})
-        result = await run_search(query, body.chat_id)
+        result = await run_search(
+            query,
+            body.chat_id,
+            ai_process_result=bool(body.ai_process_result),
+        )
         if result.get("error"):
             status = 502 if "network error" in result["error"] else 400
             raise HTTPException(status_code=status, detail=result)

@@ -1,4 +1,4 @@
-import type { InsightResponse, SearchResponse } from "./types";
+import type { HealthResponse, InsightResponse, SearchResponse } from "./types";
 
 async function parseJson(res: Response) {
   const data = await res.json().catch(() => ({}));
@@ -8,9 +8,20 @@ async function parseJson(res: Response) {
   return data;
 }
 
+export async function fetchHealth(): Promise<HealthResponse> {
+  const res = await fetch("/api/health");
+  return parseJson(res) as Promise<HealthResponse>;
+}
+
+export type SearchOptions = {
+  /** Hub-style insight after Zeus tools. Ask AI = true; landing/results = false. */
+  aiProcessResult?: boolean;
+};
+
 export async function search(
   query: string,
-  chatId?: string | null
+  chatId?: string | null,
+  options?: SearchOptions
 ): Promise<SearchResponse> {
   const res = await fetch("/api/search", {
     method: "POST",
@@ -18,6 +29,8 @@ export async function search(
     body: JSON.stringify({
       query,
       chat_id: chatId || undefined,
+      // Default cheap path for search UI; Ask AI opts into insight.
+      ai_process_result: options?.aiProcessResult ?? false,
     }),
   });
   return parseJson(res) as Promise<SearchResponse>;

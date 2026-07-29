@@ -6,8 +6,18 @@
 services:
   backend:
     build:
-      context: ..
-      dockerfile: demo_yelp/Dockerfile.backend
+      # Release pin: kotenai-zeus-client @ git tag 0.2.1-alpha (needs SSH agent).
+      # Offline monorepo sibling instead:
+      #   context: ..
+      #   dockerfile: demo_yelp/Dockerfile.backend
+      #   target: monorepo
+      context: .
+      dockerfile: Dockerfile.backend
+      target: release
+      ssh:
+        - default
+      args:
+        ZEUS_CLIENT_GIT_REF: "0.2.1-alpha"
     image: local-guide-backend:local
     container_name: local-guide-backend
     ports:

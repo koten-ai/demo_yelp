@@ -12,7 +12,9 @@ dependencies = [
     "uvicorn[standard]==0.34.0",
     "httpx==0.28.1",
     "python-multipart==0.0.20",
-    "kotenai-zeus-client @ file:../zeus_client_python",
+    # Pin to published client release (package metadata 0.2.1; git tag 0.2.1-alpha).
+    # Override locally with: pip install -e ../zeus_client_python
+    "kotenai-zeus-client @ git+ssh://git@github.com/koten-ai/zeus_client_python.git@0.2.1-alpha",
 ]
 
 [project.optional-dependencies]

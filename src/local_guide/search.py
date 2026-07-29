@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 from zeus_client import (
+    ClientSettings,
     StructuredAgentResponse,
     build_tool_order,
     load_config,
@@ -31,7 +32,36 @@ LOCAL_PROMPT_PREFIX = (
     "latitude/longitude, hours/is_open, and price attributes when available. "
     "Do not invent businesses missing from Zeus results. "
     "Summarize why each match fits the user intent.\n\n"
+    "Tool discipline (critical):\n"
+    "- Always call tools for this turn. Never answer from prior failed turns or invent "
+    "\"collection boundary\" outages without a fresh tool error this round.\n"
+    "- Prefer ONE pipeline. For location filters (city/state), use find with equality "
+    "`where` on MINI-SCHEMA GSI fields (e.g. city:\"Philadelphia\"), then project fields "
+    "on @step.ids. Do NOT rely on hybrid/fts alone for city — hybrid where can return "
+    "zero while find succeeds.\n"
+    "- For free-text category/vibe (grocery, wifi, cafe): FIRST find+project by city "
+    "(limit 50–100), then filter/rank in your summary by categories/name. "
+    "Avoid FTS/hybrid `narrow_to` on find ids when that path returns empty — "
+    "fall back to find→project only.\n"
+    "- After FTS/hybrid, project using @step.ids / node_ids returned by that step — "
+    "do not batch_get raw source keys like biz:… alone if get returns missing.\n"
+    "- pipeline confidence must be a STRING: high|med|low (never an object).\n"
+    "- End with return (or terminating pipeline fields) including a real summary.\n\n"
     "User preferences:\n"
+)
+
+_EMPTY_ANSWER_MARKERS = {
+    "",
+    "(model returned no content)",
+    "none",
+    "null",
+}
+
+_POISON_MARKERS = (
+    'unknown boundary: "collections"',
+    'unknown boundary: \\"collections\\"',
+    "No verifiable",
+    "collection boundary errors",
 )
 
 
@@ -47,10 +77,84 @@ def _structured_response_payload(structured: StructuredAgentResponse) -> dict:
     return asdict(structured)
 
 
-async def run_search(query: str, chat_id: str | None = None) -> dict:
-    """Run one agent turn. Returns success payload or {\"error\": ...}."""
+def _message_text(turn: dict) -> str:
+    content = turn.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+            elif isinstance(part, str):
+                parts.append(part)
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def history_looks_poisoned(prior_turns: list | None) -> bool:
+    """True when multi-turn context is likely to make the model skip tools.
+
+    Detects long histories and repeated boundary / \"no verifiable\" failure
+    narratives from earlier Zeus misconfig (boundary=collections).
+    """
+    turns = prior_turns or []
+    if len(turns) >= 48:
+        return True
+
+    boundary_hits = 0
+    canned_no_data = 0
+    for turn in turns[-30:]:
+        if not isinstance(turn, dict):
+            continue
+        text = _message_text(turn)
+        role = turn.get("role") or ""
+        if any(m in text for m in _POISON_MARKERS[:2]):
+            boundary_hits += 1
+        if role == "assistant" and "No verifiable" in text and not turn.get("tool_calls"):
+            canned_no_data += 1
+        elif role == "assistant" and "collection boundary errors" in text:
+            canned_no_data += 1
+    return boundary_hits >= 2 or canned_no_data >= 2
+
+
+def synthesize_answer_from_results(query: str, results: list[dict]) -> str:
+    """Fallback prose when the model returns empty content but zeus_data mapped."""
+    if not results:
+        return ""
+    names = [str(r.get("name") or "").strip() for r in results if r.get("name")]
+    names = [n for n in names if n][:8]
+    if not names:
+        return f"Found {len(results)} matching businesses for: {query.strip()}"
+    listed = "; ".join(names)
+    extra = "" if len(results) <= len(names) else f" (+{len(results) - len(names)} more)"
+    return (
+        f"Found {len(results)} businesses matching **{query.strip()}**. "
+        f"Top matches: {listed}{extra}."
+    )
+
+
+def _answer_is_empty(answer: object) -> bool:
+    if answer is None:
+        return True
+    text = str(answer).strip()
+    return text.lower() in _EMPTY_ANSWER_MARKERS
+
+
+async def run_search(
+    query: str,
+    chat_id: str | None = None,
+    *,
+    ai_process_result: bool = False,
+) -> dict:
+    """Run one agent turn. Returns success payload or {\"error\": ...}.
+
+    ``ai_process_result`` maps to kotenai-zeus-client ``ClientSettings`` (0.2.1+):
+    - ``False`` (default): cheap path for landing / results search cards
+    - ``True``: Hub-style insight synthesis for Ask AI multi-turn chat
+    """
     try:
-        return await _search_async(query, chat_id)
+        return await _search_async(query, chat_id, ai_process_result=ai_process_result)
     except RuntimeError as e:
         return {"error": str(e)}
     except httpx.HTTPError as e:
@@ -59,7 +163,12 @@ async def run_search(query: str, chat_id: str | None = None) -> dict:
         return {"error": str(e)}
 
 
-async def _search_async(query: str, chat_id: str | None) -> dict:
+async def _search_async(
+    query: str,
+    chat_id: str | None,
+    *,
+    ai_process_result: bool = False,
+) -> dict:
     cfg = await load_config()
     zcfg = resolve_zeus_config(cfg)
     zeus_url = (zcfg.get("url") or "").rstrip("/")
@@ -96,10 +205,25 @@ async def _search_async(query: str, chat_id: str | None) -> dict:
                 "traces": [],
                 "last_results": [],
             }
-        prior_turns = CHATS[chat_id]["turns"]
+        prior_turns = list(CHATS[chat_id]["turns"] or [])
         prior_sid = CHATS[chat_id].get("zeus_session_id", "") or ""
         prior_round = int(CHATS[chat_id].get("zeus_round", 0) or 0)
 
+        if history_looks_poisoned(prior_turns):
+            logger.warning(
+                "resetting poisoned chat history chat_id=%s turns=%d prior_sid=%s",
+                chat_id,
+                len(prior_turns),
+                (prior_sid or "")[:16],
+            )
+            prior_turns = []
+            prior_sid = ""
+            prior_round = 0
+            CHATS[chat_id]["turns"] = []
+            CHATS[chat_id].pop("zeus_session_id", None)
+            CHATS[chat_id]["zeus_round"] = 0
+
+        settings = ClientSettings(ai_process_result=bool(ai_process_result))
         answer, trace, new_turns, session_meta, structured = await run_agent(
             zeus_url,
             zcfg,
@@ -120,13 +244,49 @@ async def _search_async(query: str, chat_id: str | None) -> dict:
             zeus_round=prior_round,
             structured=True,
             output_schema=DEMO_OUTPUT_SCHEMA,
+            settings=settings,
         )
 
         CHATS[chat_id]["turns"] = new_turns
-        if session_meta.get("session_id"):
-            CHATS[chat_id]["zeus_session_id"] = session_meta["session_id"]
-            CHATS[chat_id]["zeus_round"] = session_meta.get("round") or prior_round
+        session_error = str((trace or {}).get("session_error") or "")
+        notes = (trace or {}).get("notes") or []
+        rehydrate_failed = any(
+            isinstance(n, str) and "rehydrate" in n and "failed" in n for n in notes
+        )
+        turn_conflict = "turn 409" in session_error or (
+            session_error.startswith("turn ") and "409" in session_error
+        )
+        # Client now recreates a durable session same-turn when rehydrate fails.
+        # Prefer the sid returned from this turn; only drop when nothing usable
+        # came back (create also failed, or turn conflict without a new sid).
+        returned_sid = (session_meta.get("session_id") or "").strip()
+        session_created = bool((trace or {}).get("session", {}).get("created")) and bool(
+            returned_sid
+        )
+        if returned_sid:
+            CHATS[chat_id]["zeus_session_id"] = returned_sid
+            CHATS[chat_id]["zeus_round"] = session_meta.get("round") or (
+                1 if session_created else prior_round
+            )
             CHATS[chat_id]["contract_status"] = session_meta.get("contract_status")
+            if rehydrate_failed and session_created:
+                logger.info(
+                    "recovered dead zeus session chat_id=%s prior_sid=%s new_sid=%s",
+                    chat_id,
+                    (prior_sid or "")[:16],
+                    returned_sid[:16],
+                )
+        elif rehydrate_failed or turn_conflict:
+            CHATS[chat_id].pop("zeus_session_id", None)
+            CHATS[chat_id]["zeus_round"] = 0
+            CHATS[chat_id]["contract_status"] = session_meta.get("contract_status") or "none"
+            logger.warning(
+                "dropped dead zeus session chat_id=%s prior_sid=%s rehydrate_failed=%s turn_conflict=%s",
+                chat_id,
+                (prior_sid or "")[:16],
+                rehydrate_failed,
+                turn_conflict,
+            )
 
         target = f"{bucket}/{scope}/{collection}"
         entry = {
@@ -139,8 +299,12 @@ async def _search_async(query: str, chat_id: str | None) -> dict:
             "provider": provider_id,
             "trace": trace,
             "created": time.time(),
-            "session_id": session_meta.get("session_id") or prior_sid,
-            "session_round": session_meta.get("round") or prior_round,
+            "session_id": returned_sid or (None if (rehydrate_failed or turn_conflict) else prior_sid),
+            "session_round": (
+                session_meta.get("round")
+                if returned_sid
+                else (0 if (rehydrate_failed or turn_conflict) else prior_round)
+            ),
             "contract_status": session_meta.get("contract_status"),
         }
         CHATS[chat_id].setdefault("traces", []).append(entry)
@@ -151,6 +315,19 @@ async def _search_async(query: str, chat_id: str | None) -> dict:
         structured_answer = parse_markdown_answer(answer)
         if not results and structured_answer:
             results = structured_answer_to_results(structured_answer)
+
+        if _answer_is_empty(answer) and results:
+            answer = synthesize_answer_from_results(query, results)
+            try:
+                structured.answer = answer  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if isinstance(trace, dict):
+                notes = list(trace.get("notes") or [])
+                notes.append(
+                    "[WARN] empty model answer; synthesized summary from zeus_data/results"
+                )
+                trace["notes"] = notes
 
         CHATS[chat_id]["last_results"] = results
         await persist_chat(chat_id)
@@ -184,4 +361,5 @@ async def _search_async(query: str, chat_id: str | None) -> dict:
         "session_id": session_meta.get("session_id") or prior_sid,
         "session_round": session_meta.get("round") or prior_round,
         "contract_status": session_meta.get("contract_status"),
+        "ai_process_result": bool(ai_process_result),
     }

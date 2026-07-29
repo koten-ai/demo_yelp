@@ -60,7 +60,11 @@ export function summaryFromResponse(answer: unknown, structured: unknown): strin
     if (ctx) return ctx;
     if (tip) return tip;
   }
-  if (typeof answer === "string") return answer;
+  if (typeof answer === "string") {
+    const t = answer.trim();
+    if (!t || t === "(model returned no content)") return "";
+    return answer;
+  }
   if (answer && typeof answer === "object") {
     try {
       return JSON.stringify(answer);

@@ -2,9 +2,14 @@ import pytest
 
 
 def test_health(client):
+    from importlib.metadata import version as pkg_version
+
     res = client.get("/api/health")
     assert res.status_code == 200
-    assert res.json()["ok"] is True
+    data = res.json()
+    assert data["ok"] is True
+    # Header chrome reads this — must match installed kotenai-zeus-client.
+    assert data["zeus_client_version"] == pkg_version("kotenai-zeus-client")
 
 
 def test_search_rejects_empty_query(client):
@@ -24,7 +29,10 @@ def test_tool_order_returns_versions(client):
 
 @pytest.mark.asyncio
 async def test_search_mocked(monkeypatch, client):
-    async def fake_search(query, chat_id=None):
+    captured = {}
+
+    async def fake_search(query, chat_id=None, *, ai_process_result=False):
+        captured["ai_process_result"] = ai_process_result
         return {
             "chat_id": chat_id or "yelp_test123",
             "query": query,
@@ -55,6 +63,7 @@ async def test_search_mocked(monkeypatch, client):
             "session_id": "sess",
             "session_round": 1,
             "contract_status": "match",
+            "ai_process_result": ai_process_result,
         }
 
     monkeypatch.setattr("local_guide.app.run_search", fake_search)
@@ -64,3 +73,49 @@ async def test_search_mocked(monkeypatch, client):
     assert data["chat_id"].startswith("yelp_")
     assert data["results"][0]["name"] == "Cafe"
     assert "trace" in data
+    # Landing/results default: cheap path
+    assert captured["ai_process_result"] is False
+    assert data["ai_process_result"] is False
+
+
+@pytest.mark.asyncio
+async def test_search_ask_ai_enables_insight(monkeypatch, client):
+    captured = {}
+
+    async def fake_search(query, chat_id=None, *, ai_process_result=False):
+        captured["ai_process_result"] = ai_process_result
+        return {
+            "chat_id": chat_id or "yelp_askai",
+            "query": query,
+            "answer": "Insight answer",
+            "structured_answer": None,
+            "structured_response": {
+                "answer": "Insight answer",
+                "zeus_data": [],
+                "warnings": [],
+            },
+            "results": [],
+            "trace": {"steps": []},
+            "tool_order": {"v1": [], "v2": ["search", "return"]},
+            "target": "yelp-demo/_default/_default",
+            "api_version": "v2",
+            "mode": "open",
+            "model": "test-model",
+            "provider": "xai",
+            "zeus_connection": "default",
+            "zeus_url": "http://localhost:8080",
+            "session_id": "sess",
+            "session_round": 1,
+            "contract_status": "match",
+            "ai_process_result": ai_process_result,
+        }
+
+    monkeypatch.setattr("local_guide.app.run_search", fake_search)
+    res = client.post(
+        "/api/search",
+        json={"query": "quiet cafes", "ai_process_result": True},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert captured["ai_process_result"] is True
+    assert data["ai_process_result"] is True

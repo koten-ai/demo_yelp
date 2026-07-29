@@ -1,3 +1,9 @@
+/** GET /api/health — includes installed kotenai-zeus-client version for chrome. */
+export type HealthResponse = {
+  ok: boolean;
+  zeus_client_version: string;
+};
+
 export type BusinessCard = {
   name: string;
   description: string;
@@ -37,6 +43,8 @@ export type SearchResponse = {
   session_id: string;
   session_round: number;
   contract_status: string | null;
+  /** Echo of ClientSettings.ai_process_result for this turn (0.2.1+). */
+  ai_process_result?: boolean;
   error?: string;
 };
 

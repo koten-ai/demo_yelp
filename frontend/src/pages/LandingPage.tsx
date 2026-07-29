@@ -7,7 +7,7 @@ import { ErrorBanner } from "../components/common/States";
 import { search } from "../api/client";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { appendTrace } from "../lib/trace";
-import { getChatId, loadLastSearch, saveLastSearch } from "../state/session";
+import { clearSession, loadLastSearch, saveLastSearch } from "../state/session";
 import type { BusinessCard as Card, UiBusiness } from "../api/types";
 
 export default function LandingPage() {
@@ -26,7 +26,10 @@ export default function LandingPage() {
     setLoading(true);
     setError("");
     try {
-      const data = await search(query, getChatId());
+      // Home search is always a new discovery turn — never reuse a prior
+      // chat_id/zeus session (those can carry poisoned tool-failure history).
+      clearSession();
+      const data = await search(query, null);
       appendTrace(query, data);
       const answer = summaryFromResponse(data.answer, data.structured_answer);
       saveLastSearch({

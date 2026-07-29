@@ -3,6 +3,7 @@ import BusinessCard from "../components/results/BusinessCard";
 import { ErrorBanner, LoadingBlock } from "../components/common/States";
 import { search } from "../api/client";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
+import { renderSimpleMarkdown } from "../lib/simpleMarkdown";
 import { appendTrace } from "../lib/trace";
 import { clearSession, getChatId, saveLastSearch, setChatId } from "../state/session";
 import type { BusinessCard as Card } from "../api/types";
@@ -27,7 +28,7 @@ export default function ConversationalSearchPage() {
     setLoading(true);
     setError("");
     try {
-      const data = await search(q, getChatId());
+      const data = await search(q, getChatId(), { aiProcessResult: true });
       appendTrace(q, data);
       const answer = summaryFromResponse(data.answer, data.structured_answer);
       setChatId(data.chat_id);
@@ -91,7 +92,11 @@ export default function ConversationalSearchPage() {
                   : "bg-surface-container-lowest border border-outline-variant/40"
               }`}
             >
-              <p className="text-sm whitespace-pre-wrap">{t.text}</p>
+              {t.role === "assistant" ? (
+                <div className="text-sm">{renderSimpleMarkdown(t.text)}</div>
+              ) : (
+                <p className="text-sm whitespace-pre-wrap">{t.text}</p>
+              )}
               {t.results && t.results.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {t.results.slice(0, 5).map((r, idx) => (
