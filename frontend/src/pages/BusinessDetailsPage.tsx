@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ErrorBanner, LoadingBlock } from "../components/common/States";
+import PhotoCarouselModal from "../components/gallery/PhotoCarouselModal";
 import ResultsMap from "../components/map/ResultsMap";
 import { fetchBusiness, fetchInsight, fetchReviews } from "../api/client";
 import { normalizeBusiness } from "../lib/normalize";
@@ -30,7 +31,8 @@ export default function BusinessDetailsPage() {
   const [insightLoading, setInsightLoading] = useState(true);
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [error, setError] = useState("");
-  const [heroIndex, setHeroIndex] = useState(0);
+  /** Modal carousel index only — hero grid tiles stay fixed at 0/1/2. */
+  const [galleryIndex, setGalleryIndex] = useState(0);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [reviewsShown, setReviewsShown] = useState(REVIEWS_PAGE);
   const [favorited, setFavorited] = useState(false);
@@ -38,7 +40,7 @@ export default function BusinessDetailsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    setHeroIndex(0);
+    setGalleryIndex(0);
     setReviewsShown(REVIEWS_PAGE);
     setInsight(null);
     setReviews([]);
@@ -156,6 +158,13 @@ export default function BusinessDetailsPage() {
     nav("/chat", { state: { seedQuery: q, fromBusinessId: id } });
   }
 
+  function openGalleryAt(i: number) {
+    if (!gallery.length) return;
+    const n = gallery.length;
+    setGalleryIndex(((i % n) + n) % n);
+    setGalleryOpen(true);
+  }
+
   if (loading) return <LoadingBlock label="Loading business…" />;
 
   const visibleReviews = reviews.slice(0, reviewsShown);
@@ -237,26 +246,29 @@ export default function BusinessDetailsPage() {
                   : "grid-cols-1 h-[280px] md:h-[420px]"
             }`}
           >
-            <div
-              className={`relative overflow-hidden rounded-xl group ${
+            <button
+              type="button"
+              onClick={() => openGalleryAt(0)}
+              className={`relative overflow-hidden rounded-xl group text-left ${
                 gallery.length >= 3
                   ? "md:col-span-2 md:row-span-2 md:rounded-l-3xl min-h-[240px] md:min-h-0"
                   : "min-h-[240px] md:min-h-0 md:rounded-l-3xl"
               }`}
+              aria-label="Open photo gallery"
             >
               <img
-                src={gallery[heroIndex] || biz.image}
+                src={gallery[0] || biz.image}
                 alt=""
                 className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
               />
-              <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/40 to-transparent p-6 md:p-8">
+              <div className="pointer-events-none absolute inset-0 flex items-end bg-gradient-to-t from-black/40 to-transparent p-6 md:p-8">
                 {categoryBadge && (
                   <span className="rounded-full bg-white/90 px-3 py-1 font-mono text-xs uppercase tracking-wider text-primary shadow-sm backdrop-blur">
                     {categoryBadge}
                   </span>
                 )}
               </div>
-            </div>
+            </button>
 
             {gallery.length >= 2 && (
               <div
@@ -267,7 +279,8 @@ export default function BusinessDetailsPage() {
                 <button
                   type="button"
                   className="h-full w-full"
-                  onClick={() => setHeroIndex(1 % gallery.length)}
+                  onClick={() => openGalleryAt(1 % gallery.length)}
+                  aria-label="Open photo 2"
                 >
                   <img
                     src={gallery[1] || gallery[0]}
@@ -280,40 +293,46 @@ export default function BusinessDetailsPage() {
 
             {gallery.length >= 3 && (
               <div className="relative hidden overflow-hidden rounded-r-3xl group md:block">
-                <img
-                  src={gallery[2] || gallery[0]}
-                  alt=""
-                  className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
-                />
-                <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 backdrop-blur-sm transition-opacity duration-300 group-hover:opacity-100">
-                  <button
-                    type="button"
-                    onClick={() => setGalleryOpen(true)}
-                    className="flex items-center gap-2 rounded-full bg-white px-4 py-2 font-mono text-xs uppercase tracking-wider text-primary shadow-l2"
-                  >
-                    <span
-                      className="material-symbols-outlined text-[18px]"
-                      style={{ fontVariationSettings: "'FILL' 1" }}
-                    >
-                      grid_view
+                <button
+                  type="button"
+                  className="h-full w-full"
+                  onClick={() => openGalleryAt(2)}
+                  aria-label={`View all ${gallery.length} photos`}
+                >
+                  <img
+                    src={gallery[2] || gallery[0]}
+                    alt=""
+                    className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 backdrop-blur-sm transition-opacity duration-300 group-hover:opacity-100">
+                    <span className="flex items-center gap-2 rounded-full bg-white px-4 py-2 font-mono text-xs uppercase tracking-wider text-primary shadow-l2">
+                      <span
+                        className="material-symbols-outlined text-[18px]"
+                        style={{ fontVariationSettings: "'FILL' 1" }}
+                      >
+                        grid_view
+                      </span>
+                      View all {gallery.length} photos
                     </span>
-                    View all {gallery.length} photos
-                  </button>
-                </div>
+                  </div>
+                </button>
               </div>
             )}
 
-            {/* Mobile multi-thumb strip */}
+            {/* Mobile multi-thumb strip — tap opens carousel at that index */}
             {gallery.length > 1 && (
               <div className="flex gap-2 overflow-x-auto pb-1 md:hidden col-span-full">
                 {gallery.map((src, i) => (
                   <button
                     key={`${src}-${i}`}
                     type="button"
-                    onClick={() => setHeroIndex(i)}
+                    onClick={() => openGalleryAt(i)}
                     className={`h-16 w-20 shrink-0 overflow-hidden rounded-lg ring-2 ${
-                      i === heroIndex ? "ring-primary" : "ring-transparent"
+                      galleryOpen && i === galleryIndex
+                        ? "ring-primary"
+                        : "ring-transparent"
                     }`}
+                    aria-label={`Open photo ${i + 1}`}
                   >
                     <img src={src} alt="" className="h-full w-full object-cover" />
                   </button>
@@ -550,50 +569,14 @@ export default function BusinessDetailsPage() {
         </div>
       </main>
 
-      {/* Simple lightbox for full gallery */}
-      {galleryOpen && gallery.length > 0 && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Photo gallery"
-          onClick={() => setGalleryOpen(false)}
-        >
-          <div
-            className="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-2xl bg-surface-container-lowest p-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="font-semibold text-on-surface">
-                {gallery.length} photos{biz ? ` · ${biz.title}` : ""}
-              </h3>
-              <button
-                type="button"
-                className="rounded-lg p-1 text-on-surface-variant hover:bg-surface-container hover:text-primary"
-                onClick={() => setGalleryOpen(false)}
-                aria-label="Close gallery"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-              {gallery.map((src, i) => (
-                <button
-                  key={`${src}-lb-${i}`}
-                  type="button"
-                  className="aspect-[4/3] overflow-hidden rounded-xl"
-                  onClick={() => {
-                    setHeroIndex(i);
-                    setGalleryOpen(false);
-                  }}
-                >
-                  <img src={src} alt="" className="h-full w-full object-cover" />
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      <PhotoCarouselModal
+        images={gallery}
+        index={galleryIndex}
+        title={biz?.title}
+        open={galleryOpen}
+        onClose={() => setGalleryOpen(false)}
+        onIndexChange={setGalleryIndex}
+      />
     </div>
   );
 }
