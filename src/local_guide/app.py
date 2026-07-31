@@ -135,10 +135,13 @@ def create_app() -> FastAPI:
         business_id: str,
         chat_id: str | None = Query(default=None),
     ):
-        # chat_id query is ignored (isolated detail session).
+        # chat_id query is ignored — detail uses V2 find (no discovery session).
         result = await get_business(business_id, chat_id)
-        if result.get("error"):
-            status = 502 if "network error" in result["error"] else 400
+        # Hard-fail only when there is no usable card (soft placeholder still 200).
+        biz = result.get("business")
+        if result.get("error") and not (isinstance(biz, dict) and biz.get("name")):
+            err = str(result["error"])
+            status = 502 if "network error" in err.lower() else 400
             raise HTTPException(status_code=status, detail=result)
         return result
 

@@ -45,6 +45,50 @@ _REVIEW_PROJECT_FIELDS = (
     "doc_key",
     "entity_type",
 )
+# Business source docs hold card fields; graph project is a thinner fallback.
+_BUSINESS_N1QL_FIELDS = (
+    "name",
+    "city",
+    "state",
+    "stars",
+    "review_count",
+    "categories",
+    "address",
+    "latitude",
+    "longitude",
+    "business_id",
+    "hours",
+    "is_open",
+    "attributes",
+    "postal_code",
+)
+_BUSINESS_PROJECT_FIELDS = (
+    "name",
+    "city",
+    "state",
+    "stars",
+    "review_count",
+    "categories",
+    "address",
+    "latitude",
+    "longitude",
+    "business_id",
+    "hours",
+    "is_open",
+    "doc_key",
+    "entity_type",
+)
+
+
+def _business_ids_equal(a: str, b: str) -> bool:
+    """Match bare Yelp ids, biz: keys, and exact string equality."""
+    sa = (a or "").strip()
+    sb = (b or "").strip()
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    return normalize_yelp_business_id(sa) == normalize_yelp_business_id(sb)
 
 
 def find_cached_business(business_id: str) -> dict[str, str] | None:
@@ -56,7 +100,7 @@ def find_cached_business(business_id: str) -> dict[str, str] | None:
         for card in chat.get("last_results") or []:
             if not isinstance(card, dict):
                 continue
-            if str(card.get("business_id") or "").strip() == bid:
+            if _business_ids_equal(str(card.get("business_id") or ""), bid):
                 return dict(card)
             if str(card.get("name") or "").strip() == bid:
                 return dict(card)
@@ -342,17 +386,213 @@ def _isolated_detail_chat_id() -> str:
     """Mint a throwaway chat id so detail/insight never share discovery history.
 
     Discovery multi-turn lives on landing/results/Ask AI ``chat_id`` values.
-    Reusing those for ``get_business`` / insight dumps id-lookup tool payloads
-    into the durable Zeus session and later synthesis turns (session poison).
+    Reusing those for insight dumps id-lookup tool payloads into the durable
+    Zeus session and later synthesis turns (session poison). Business card
+    seed uses direct V2 ``find`` (no chat).
     """
     return "detail_" + uuid.uuid4().hex[:12]
 
 
-async def get_business(business_id: str, chat_id: str | None = None) -> dict:
-    """Return a business card, using cache or a short agent fetch.
+def _biz_doc_key(raw_id: str, bare: str) -> str:
+    """Yelp academic source keys are ``biz:<id>``."""
+    rid = (raw_id or "").strip()
+    if rid.startswith("biz:"):
+        return rid
+    if bare:
+        return f"biz:{bare}"
+    return rid
 
-    ``chat_id`` is accepted for API compatibility but **ignored** for the agent
-    path — detail always runs on an isolated session (see session isolation guide).
+
+def _card_from_find_item(item: dict[str, Any], *, raw_id: str, bare: str) -> dict[str, str] | None:
+    """Minimal card from find ``items[]`` when hydrate/project is empty."""
+    name = _str_field(item.get("name") or item.get("title"))
+    if not name:
+        return None
+    doc_key = _str_field(item.get("doc_key") or item.get("source") or item.get("id"))
+    bid = doc_key if doc_key.startswith("biz:") else (_biz_doc_key(raw_id, bare) or bare or raw_id)
+    return {
+        "name": name,
+        "description": "",
+        "image": "",
+        "business_id": bid or bare or raw_id,
+    }
+
+
+def _row_to_business_card(row: dict[str, Any], *, fallback_id: str = "") -> dict[str, str] | None:
+    """Map Zeus/N1QL business row → SPA BusinessCard shape."""
+    from local_guide.results_parser import _normalize_row
+
+    card = _normalize_row(row)
+    if card:
+        if not card.get("business_id") and fallback_id:
+            card["business_id"] = fallback_id
+        return card
+    name = _str_field(row.get("name") or row.get("title"))
+    if not name:
+        return None
+    bid = _str_field(row.get("business_id") or row.get("doc_key") or row.get("id") or fallback_id)
+    return {
+        "name": name,
+        "description": "",
+        "image": "",
+        "business_id": bid or fallback_id,
+    }
+
+
+async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
+    """Fetch one business card via Zeus V2 ``find`` (no LLM).
+
+    ``find`` entity_type=Business where business_id=<bare> (strip optional
+    ``biz:``), then hydrate source fields with N1QL ``USE KEYS`` when
+    ``config.couchbase`` is set; else ``project`` on find node ids. Soft-fails
+    with a minimal card when possible.
+    """
+    from zeus_client import (
+        CouchbaseQueryConfig,
+        load_config,
+        logger,
+        resolve_zeus_config,
+        run_verb_from_config,
+    )
+    from zeus_client.zeus.suggest import n1ql_hydrate_keys
+
+    raw_id = (business_id or "").strip()
+    bare = normalize_yelp_business_id(raw_id)
+    if not bare:
+        return {
+            "business": None,
+            "business_id": raw_id,
+            "source": "none",
+            "error": "empty business_id",
+            "ai_process_result": False,
+            "chat_id": None,
+        }
+
+    try:
+        cfg = await load_config()
+    except Exception as e:
+        logger.warning("fetch_business_via_find load_config failed: %s", e)
+        return {
+            "business": None,
+            "business_id": bare,
+            "source": "error",
+            "error": str(e),
+            "ai_process_result": False,
+            "chat_id": None,
+        }
+
+    find_res = await run_verb_from_config(
+        "find",
+        {
+            "entity_type": "Business",
+            "where": {"business_id": bare},
+            "limit": 1,
+        },
+        cfg,
+        mode_header="analytics",
+    )
+    if not find_res.ok:
+        err = find_res.error or f"find status {find_res.status}"
+        logger.warning("fetch_business_via_find find failed: %s", err)
+        return {
+            "business": None,
+            "business_id": bare,
+            "source": "zeus_find",
+            "error": err,
+            "req_id": find_res.req_id or "",
+            "ai_process_result": False,
+            "chat_id": None,
+        }
+
+    node_ids, doc_keys = _find_result_keys(find_res.body)
+    # Prefer stable biz: source keys for N1QL when find items omitted them.
+    prefer_key = _biz_doc_key(raw_id, bare)
+    if prefer_key and prefer_key not in doc_keys:
+        doc_keys = [prefer_key, *doc_keys]
+
+    find_item: dict[str, Any] | None = None
+    body = find_res.body if isinstance(find_res.body, dict) else {}
+    result = body.get("result") if isinstance(body.get("result"), dict) else body
+    if isinstance(result, dict):
+        for item in result.get("items") or []:
+            if isinstance(item, dict):
+                find_item = item
+                break
+
+    rows: list[dict[str, Any]] = []
+    source = "zeus_find"
+    sources: list[str] = ["zeus_find"]
+
+    zcfg = resolve_zeus_config(cfg)
+    zeus_url = str(zcfg.get("url") or "")
+    bucket, scope, collection = _sample_triple(cfg)
+    cb_raw = cfg.get("couchbase") if isinstance(cfg.get("couchbase"), dict) else None
+    cb = CouchbaseQueryConfig.from_mapping(
+        cb_raw,
+        zeus_url=zeus_url,
+        allow_host_default=False,
+    )
+
+    keys_for_n1ql = [k for k in doc_keys if k.startswith("biz:")] or (
+        [prefer_key] if prefer_key.startswith("biz:") else []
+    )
+    if keys_for_n1ql and cb is not None:
+        try:
+            rows = await n1ql_hydrate_keys(
+                cb,
+                bucket,
+                scope,
+                collection,
+                keys_for_n1ql[:1],
+                fields=_BUSINESS_N1QL_FIELDS,
+            )
+            if rows:
+                source = "zeus_find+n1ql"
+                sources.append("n1ql_hydrate")
+        except Exception as e:
+            logger.warning("fetch_business_via_find n1ql hydrate failed: %s", e)
+
+    if not rows and node_ids:
+        proj = await run_verb_from_config(
+            "project",
+            {"ids": node_ids[:1], "fields": list(_BUSINESS_PROJECT_FIELDS)},
+            cfg,
+            mode_header="analytics",
+        )
+        if proj.ok:
+            rows = _project_rows(proj.body)
+            if rows:
+                source = "zeus_find+project"
+                sources.append("zeus_project")
+
+    card: dict[str, str] | None = None
+    if rows:
+        card = _row_to_business_card(rows[0], fallback_id=prefer_key or bare)
+    if not card and find_item:
+        card = _card_from_find_item(find_item, raw_id=raw_id, bare=bare)
+
+    if card:
+        from local_guide.business_images import apply_local_images
+
+        apply_local_images(card)
+
+    return {
+        "business": card,
+        "business_id": bare,
+        "source": source,
+        "sources": sources,
+        "req_id": find_res.req_id or "",
+        "ai_process_result": False,
+        "chat_id": None,
+        "error": None if card else "business not found",
+    }
+
+
+async def get_business(business_id: str, chat_id: str | None = None) -> dict:
+    """Return a business card via cache or direct V2 ``find`` (no LLM).
+
+    ``chat_id`` is accepted for API compatibility but **ignored** — detail seed
+    never binds discovery multi-turn history (see session isolation guide).
     """
     from local_guide.business_images import apply_local_images
 
@@ -362,39 +602,44 @@ async def get_business(business_id: str, chat_id: str | None = None) -> dict:
     cached = find_cached_business(business_id)
     if cached:
         apply_local_images(cached)
-        return {"business": cached, "chat_id": None, "source": "cache"}
-
-    q = (
-        f"Get the business with id {business_id} (or matching that identifier). "
-        "Return name, categories, stars, review_count, address, city, state, "
-        "latitude, longitude, hours, is_open, and price if available."
-    )
-    # Always fresh chat + Zeus session — do not pass discovery chat_id.
-    result = await run_search(q, _isolated_detail_chat_id())
-    if result.get("error"):
-        return result
-    card = None
-    for c in result.get("results") or []:
-        if str(c.get("business_id") or "") == business_id or c.get("name"):
-            card = c
-            if str(c.get("business_id") or "") == business_id:
-                break
-    if not card:
-        card = {
-            "name": business_id,
-            "description": "",
-            "image": "",
-            "business_id": business_id,
+        return {
+            "business": cached,
+            "chat_id": None,
+            "source": "cache",
+            "ai_process_result": False,
         }
-    apply_local_images(card)
+
+    fetched = await fetch_business_via_find(business_id)
+    card = fetched.get("business")
+    if isinstance(card, dict) and card.get("name"):
+        return {
+            "business": card,
+            "chat_id": None,
+            "source": fetched.get("source") or "zeus_find",
+            "sources": fetched.get("sources") or [],
+            "req_id": fetched.get("req_id") or "",
+            "ai_process_result": False,
+            "error": None,
+        }
+
+    # Soft placeholder so deep-links still render chrome; SPA can show empty fields.
+    raw = (business_id or "").strip()
+    bare = normalize_yelp_business_id(raw)
+    placeholder = {
+        "name": raw or bare or "Business",
+        "description": "",
+        "image": "",
+        "business_id": _biz_doc_key(raw, bare) or raw,
+    }
+    apply_local_images(placeholder)
     return {
-        "business": card,
-        "chat_id": result.get("chat_id"),
-        "trace": result.get("trace"),
-        "source": "agent",
-        "answer": result.get("answer"),
-        "session_id": result.get("session_id"),
-        "session_round": result.get("session_round"),
+        "business": placeholder,
+        "chat_id": None,
+        "source": fetched.get("source") or "none",
+        "sources": fetched.get("sources") or [],
+        "req_id": fetched.get("req_id") or "",
+        "ai_process_result": False,
+        "error": fetched.get("error") or "business not found",
     }
 
 

@@ -9,6 +9,7 @@ from local_guide.detail import (
     _isolated_detail_chat_id,
     _review_row_to_ui,
     fetch_business_reviews,
+    fetch_business_via_find,
     get_business,
     normalize_yelp_business_id,
     parse_insight_answer,
@@ -68,41 +69,70 @@ def test_review_row_to_ui_maps_fields():
 
 
 @pytest.mark.asyncio
-async def test_get_business_ignores_discovery_chat_id(monkeypatch):
-    captured: dict = {}
+async def test_get_business_uses_find_not_agent(monkeypatch):
+    """Detail seed must not call run_search / discovery chat plane."""
+    search_calls: list = []
 
-    async def fake_search(query, chat_id=None, *, ai_process_result=False):
-        captured["chat_id"] = chat_id
-        captured["query"] = query
+    async def fake_search(*args, **kwargs):
+        search_calls.append((args, kwargs))
+        raise AssertionError("get_business must not call run_search")
+
+    async def fake_find(business_id: str):
+        assert business_id == "1dSKEitDDgIkaApe6UNMSA"
         return {
-            "chat_id": chat_id,
-            "answer": "ok",
-            "results": [
-                {
-                    "name": "The Pepper Pott",
-                    "description": "Caribbean",
-                    "image": "",
-                    "business_id": "1dSKEitDDgIkaApe6UNMSA",
-                }
-            ],
-            "trace": {},
-            "session_id": "sess_detail",
-            "session_round": 1,
+            "business": {
+                "name": "The Pepper Pott",
+                "description": "Caribbean",
+                "image": "",
+                "business_id": "biz:1dSKEitDDgIkaApe6UNMSA",
+                "city": "Tampa",
+                "state": "FL",
+                "rating": "4.5",
+            },
+            "business_id": "1dSKEitDDgIkaApe6UNMSA",
+            "source": "zeus_find+n1ql",
+            "sources": ["zeus_find", "n1ql_hydrate"],
+            "req_id": "req_biz",
+            "ai_process_result": False,
+            "chat_id": None,
+            "error": None,
         }
 
     monkeypatch.setattr("local_guide.detail.run_search", fake_search)
+    monkeypatch.setattr("local_guide.detail.fetch_business_via_find", fake_find)
     monkeypatch.setattr("local_guide.detail.find_cached_business", lambda _bid: None)
 
     out = await get_business(
         "1dSKEitDDgIkaApe6UNMSA",
         chat_id="yelp_discovery_shared",
     )
-    assert captured["chat_id"] != "yelp_discovery_shared"
-    assert str(captured["chat_id"]).startswith("detail_")
-    assert "1dSKEitDDgIkaApe6UNMSA" in captured["query"]
+    assert search_calls == []
     assert out["business"]["name"] == "The Pepper Pott"
-    assert out["source"] == "agent"
-    assert out["session_id"] == "sess_detail"
+    assert out["source"] == "zeus_find+n1ql"
+    assert out["chat_id"] is None
+    assert out["ai_process_result"] is False
+    assert out.get("req_id") == "req_biz"
+
+
+@pytest.mark.asyncio
+async def test_get_business_prefers_cache(monkeypatch):
+    async def boom(_bid):
+        raise AssertionError("should not find when cache hits")
+
+    monkeypatch.setattr(
+        "local_guide.detail.find_cached_business",
+        lambda _bid: {
+            "name": "Cached Cafe",
+            "business_id": "biz:c1",
+            "description": "",
+            "image": "",
+        },
+    )
+    monkeypatch.setattr("local_guide.detail.fetch_business_via_find", boom)
+    out = await get_business("biz:c1", chat_id="ignored")
+    assert out["source"] == "cache"
+    assert out["business"]["name"] == "Cached Cafe"
+    assert out["chat_id"] is None
 
 
 @pytest.mark.asyncio
@@ -185,6 +215,115 @@ async def test_api_insight_ignores_body_chat_id(monkeypatch, client):
     assert data["chat_id"] == "detail_abc"
     # API still forwards the body value into the helper; helper isolates internally.
     assert captured["chat_id_arg"] == "yelp_should_not_bind_session"
+
+
+@pytest.mark.asyncio
+async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
+    calls: list[tuple] = []
+
+    class FakeVerb:
+        def __init__(self, ok=True, body=None, status=200, req_id="r1", error=""):
+            self.ok = ok
+            self.body = body
+            self.status = status
+            self.req_id = req_id
+            self.error = error
+
+    async def fake_run_verb_from_config(verb, args, cfg, **kwargs):
+        calls.append((verb, args))
+        if verb == "find":
+            assert args["entity_type"] == "Business"
+            assert args["where"]["business_id"] == "-4dYswJy7SPcbcERvitmIg"
+            assert args["limit"] == 1
+            return FakeVerb(
+                body={
+                    "result": {
+                        "node_ids": ["file::a0b82eb7dd1d0e83"],
+                        "items": [
+                            {
+                                "doc_key": "biz:-4dYswJy7SPcbcERvitmIg",
+                                "source": "biz:-4dYswJy7SPcbcERvitmIg",
+                                "name": "Pathmark",
+                                "type": "Business",
+                            }
+                        ],
+                    }
+                }
+            )
+        if verb == "project":
+            return FakeVerb(body={"result": {"rows": []}})
+        raise AssertionError(f"unexpected verb {verb}")
+
+    async def fake_load_config():
+        return {
+            "default_sample": "yelp",
+            "samples": {
+                "yelp": {
+                    "bucket": "yelp-data",
+                    "scope": "_default",
+                    "collection": "_default",
+                }
+            },
+            "zeus": {"url": "http://127.0.0.1:8080"},
+            "couchbase": {
+                "query_url": "http://127.0.0.1:8093",
+                "username": "Administrator",
+                "password": "password",
+            },
+        }
+
+    async def fake_n1ql(cb, bucket, scope, collection, keys, **kwargs):
+        assert keys == ["biz:-4dYswJy7SPcbcERvitmIg"]
+        assert bucket == "yelp-data"
+        return [
+            {
+                "doc_key": "biz:-4dYswJy7SPcbcERvitmIg",
+                "name": "Pathmark",
+                "city": "Philadelphia",
+                "state": "PA",
+                "stars": 2.5,
+                "review_count": 34,
+                "categories": "Food, Grocery",
+                "address": "3021 Grays Ferry Ave",
+                "latitude": 39.9404026,
+                "longitude": -75.1932966,
+                "business_id": "-4dYswJy7SPcbcERvitmIg",
+                "is_open": 0,
+                "attributes": {"RestaurantsPriceRange2": "2"},
+            }
+        ]
+
+    class FakeCB:
+        @classmethod
+        def from_mapping(cls, raw, **kw):
+            return SimpleNamespace(
+                query_url="http://127.0.0.1:8093",
+                username="Administrator",
+                password="password",
+            )
+
+    import zeus_client
+    import zeus_client.zeus.suggest as suggest_mod
+
+    monkeypatch.setattr(zeus_client, "load_config", fake_load_config)
+    monkeypatch.setattr(zeus_client, "run_verb_from_config", fake_run_verb_from_config)
+    monkeypatch.setattr(
+        zeus_client,
+        "resolve_zeus_config",
+        lambda cfg: cfg.get("zeus") or {},
+    )
+    monkeypatch.setattr(zeus_client, "CouchbaseQueryConfig", FakeCB)
+    monkeypatch.setattr(suggest_mod, "n1ql_hydrate_keys", fake_n1ql)
+
+    out = await fetch_business_via_find("biz:-4dYswJy7SPcbcERvitmIg")
+    assert calls and calls[0][0] == "find"
+    assert out["source"] == "zeus_find+n1ql"
+    assert out["business"]["name"] == "Pathmark"
+    assert out["business"]["city"] == "Philadelphia"
+    assert out["business"]["price"] == "$$"
+    assert out["business"]["rating"] == "2.5"
+    assert out["ai_process_result"] is False
+    assert out["error"] is None
 
 
 @pytest.mark.asyncio
@@ -312,3 +451,28 @@ async def test_api_business_reviews_endpoint(monkeypatch, client):
     assert data["count"] == 1
     assert data["reviews"][0]["text"] == "Nice"
     assert data["source"] == "zeus_find+n1ql"
+
+
+@pytest.mark.asyncio
+async def test_api_business_endpoint_find_path(monkeypatch, client):
+    async def fake_get(business_id, chat_id=None):
+        return {
+            "business": {
+                "name": "Pathmark",
+                "business_id": business_id,
+                "description": "",
+                "image": "",
+            },
+            "chat_id": None,
+            "source": "zeus_find+n1ql",
+            "ai_process_result": False,
+            "error": None,
+        }
+
+    monkeypatch.setattr("local_guide.app.get_business", fake_get)
+    res = client.get("/api/business/biz%3A-4dYswJy7SPcbcERvitmIg")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["business"]["name"] == "Pathmark"
+    assert data["source"] == "zeus_find+n1ql"
+    assert data["chat_id"] is None

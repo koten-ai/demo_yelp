@@ -45,33 +45,39 @@ export default function BusinessDetailsPage() {
 
     async function load() {
       if (!id) return;
-      try {
-        if (!seeded) {
-          setLoading(true);
-          // Never pass discovery chat_id — detail uses an isolated backend session.
+
+      // Business card (V2 find) + reviews (V2 find) in parallel — no agent.
+      const businessP = (async () => {
+        if (seeded) return;
+        setLoading(true);
+        try {
+          // Never pass discovery chat_id — detail uses direct find, not multi-turn.
           const data = await fetchBusiness(id);
           if (!cancelled && data.business) {
             setBiz(normalizeBusiness(data.business as BusinessCard));
           }
+        } catch (e) {
+          if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        } finally {
+          if (!cancelled) setLoading(false);
         }
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+      })();
 
-      // Reviews: direct Zeus V2 find (no LLM) — independent of insight agent.
-      try {
-        setReviewsLoading(true);
-        const rev = await fetchReviews(id, 20);
-        if (!cancelled) {
-          setReviews(Array.isArray(rev.reviews) ? rev.reviews : []);
+      const reviewsP = (async () => {
+        try {
+          setReviewsLoading(true);
+          const rev = await fetchReviews(id, 20);
+          if (!cancelled) {
+            setReviews(Array.isArray(rev.reviews) ? rev.reviews : []);
+          }
+        } catch (e) {
+          if (!cancelled) console.warn(e);
+        } finally {
+          if (!cancelled) setReviewsLoading(false);
         }
-      } catch (e) {
-        if (!cancelled) console.warn(e);
-      } finally {
-        if (!cancelled) setReviewsLoading(false);
-      }
+      })();
+
+      await Promise.all([businessP, reviewsP]);
 
       try {
         setInsightLoading(true);

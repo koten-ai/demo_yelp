@@ -107,8 +107,8 @@ export async function fetchToolOrder(): Promise<{ v1: string[]; v2: string[] }> 
 }
 
 /**
- * Business card fetch. Does not take discovery chat_id — backend isolates
- * any agent path from landing/results multi-turn history.
+ * Business card fetch via direct Zeus V2 find (no LLM). Does not take
+ * discovery chat_id — backend never binds landing/results multi-turn history.
  */
 export async function fetchBusiness(businessId: string) {
   const res = await fetch(`/api/business/${encodeURIComponent(businessId)}`);

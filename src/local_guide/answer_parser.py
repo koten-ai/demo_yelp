@@ -230,7 +230,20 @@ def structured_answer_to_results(data: dict[str, Any] | None) -> list[dict[str, 
         cats = str(item.get("categories") or item.get("category") or "").strip()
         if cats:
             card["categories"] = cats
-        bid = str(item.get("business_id") or item.get("id") or "").strip()
+        # Prefer business_id / doc_key; never promote Zeus graph ids (file:: / n_*).
+        bid = ""
+        for key in ("business_id", "doc_key", "src_key", "id"):
+            raw = str(item.get(key) or "").strip()
+            if not raw:
+                continue
+            if raw.startswith("file::") or raw.startswith("file:") or raw.startswith("n_"):
+                continue
+            if raw.startswith("biz:yelp:"):
+                bid = raw.split("biz:yelp:", 1)[1].strip()
+            else:
+                bid = raw
+            if bid:
+                break
         if bid:
             card["business_id"] = bid
         url = str(item.get("url") or "").strip()

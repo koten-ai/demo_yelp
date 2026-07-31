@@ -33,8 +33,15 @@ function localGallery(businessId: string, card: BusinessCard): string[] {
 }
 
 export function normalizeBusiness(card: BusinessCard, index = 0): UiBusiness {
+  const rawId = (card.business_id || "").trim();
+  // Zeus project rows use file::<hash> / n_* as graph node ids; SPA routes need
+  // Yelp source keys (biz:…). Prefer business_id only when it is not a graph id.
+  const isGraphId =
+    rawId.startsWith("file::") ||
+    rawId.startsWith("file:") ||
+    rawId.startsWith("n_");
   const id =
-    (card.business_id || "").trim() ||
+    (rawId && !isGraphId ? rawId : "") ||
     `${card.name || "biz"}-${index}`.toLowerCase().replace(/\s+/g, "-");
   const ratingRaw = card.rating ? Number(card.rating) : NaN;
   const lat = card.latitude ? Number(card.latitude) : NaN;

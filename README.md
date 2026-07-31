@@ -119,7 +119,7 @@ Same-origin via nginx means the browser talks only to the frontend origin; CORS 
 | GET | `/api/suggest?q=&limit=` | No-LLM typeahead (`run_search` — FTS + N1QL hydrate) |
 | GET | `/api/tool-order` | Trace panel tool axes |
 | GET | `/api/health` | Liveness + `zeus_client_version` + corpus size |
-| GET | `/api/business/{id}` | Detail seed |
+| GET | `/api/business/{id}` | Detail seed via V2 `find` Business + optional N1QL hydrate (no LLM) |
 | GET | `/api/business/{id}/reviews` | Reviews via V2 `find` (`run_verb_from_config`) + optional N1QL hydrate |
 | POST | `/api/business/{id}/insight` | AI review summary |
 

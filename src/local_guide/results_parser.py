@@ -177,16 +177,41 @@ def _price_label(row: dict[str, Any]) -> str:
     return ""
 
 
+def _is_graph_node_id(value: str) -> bool:
+    """True for Zeus graph node ids (not Yelp source keys).
+
+    Project rows often set ``id`` / ``node_id`` to ``file::<hash>`` while the
+    durable business key lives on ``doc_key`` as ``biz:…``. Using the graph id
+    for SPA routes yields ``/business/file%3A%3A…`` and breaks reviews/detail.
+    """
+    s = (value or "").strip()
+    if not s:
+        return False
+    return s.startswith("file::") or s.startswith("file:") or s.startswith("n_")
+
+
+def _canonicalize_business_id(value: str) -> str:
+    """Normalize source-style business ids; strip legacy ``biz:yelp:`` only."""
+    bid = (value or "").strip()
+    if not bid or _is_graph_node_id(bid):
+        return ""
+    if bid.startswith("biz:yelp:"):
+        return bid.split("biz:yelp:", 1)[1].strip()
+    return bid
+
+
 def _business_id(row: dict[str, Any]) -> str:
-    bid = _first_str(row, ("business_id", "id"))
-    if bid:
-        if bid.startswith("biz:yelp:"):
-            return bid.split("biz:yelp:", 1)[1]
-        return bid
-    doc_key = _first_str(row, ("doc_key",))
-    if doc_key.startswith("biz:yelp:"):
-        return doc_key.split("biz:yelp:", 1)[1]
-    return doc_key
+    # Prefer stamped business_id / Yelp doc_key over project ``id`` (often file::).
+    for key in ("business_id", "doc_key", "src_key", "source"):
+        cand = _canonicalize_business_id(_first_str(row, (key,)))
+        if cand:
+            return cand
+    # ``id`` is last: find/project commonly put graph node ids here.
+    for key in ("id", "node_id"):
+        cand = _canonicalize_business_id(_first_str(row, (key,)))
+        if cand:
+            return cand
+    return ""
 
 
 def _is_open_str(row: dict[str, Any]) -> str:

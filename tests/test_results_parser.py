@@ -41,6 +41,36 @@ def test_doc_key_business_id():
     assert cards[0]["business_id"] == "abc99"
 
 
+def test_prefers_biz_doc_key_over_file_node_id():
+    """Ask AI / project rows: id+node_id are file::; durable key is doc_key biz:…"""
+    rows = [
+        {
+            "name": "Green Locus",
+            "city": "Tampa",
+            "state": "FL",
+            "stars": 5,
+            "review_count": 38,
+            "doc_key": "biz:ZuM1vcZ_ObCjCCGweYzItg",
+            "id": "file::012bc3e2a9b379b9",
+            "node_id": "file::012bc3e2a9b379b9",
+            "is_open": 1,
+            "latitude": 28.0576236,
+            "longitude": -82.5821822,
+        }
+    ]
+    cards = zeus_data_to_results(rows)
+    assert len(cards) == 1
+    assert cards[0]["business_id"] == "biz:ZuM1vcZ_ObCjCCGweYzItg"
+    assert not cards[0]["business_id"].startswith("file:")
+
+
+def test_ignores_graph_id_when_no_doc_key():
+    rows = [{"name": "X", "id": "file::deadbeef", "stars": 4}]
+    cards = zeus_data_to_results(rows)
+    assert len(cards) == 1
+    assert "business_id" not in cards[0]
+
+
 def test_dedupe_by_id():
     rows = [
         {"name": "A", "business_id": "1"},
