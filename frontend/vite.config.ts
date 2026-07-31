@@ -17,6 +17,7 @@ export default defineConfig({
     proxy: {
       "/api": apiProxy,
       "/static": apiProxy,
+      // business-images live in frontend/public and are served by Vite/nginx directly
     },
     allowedHosts: ["zeus-dev.local", "localhost", ".localhost"],
   },

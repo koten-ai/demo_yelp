@@ -12,7 +12,13 @@ from pydantic import BaseModel, Field
 from local_guide.async_lifecycle import lifespan
 from local_guide.chat_store import CHATS
 from local_guide.corpus import resolve_search_corpus
-from local_guide.detail import get_business, run_business_insight
+from local_guide.detail import (
+    DEFAULT_REVIEW_LIMIT,
+    MAX_REVIEW_LIMIT,
+    fetch_business_reviews,
+    get_business,
+    run_business_insight,
+)
 from local_guide.paths import PACKAGE_DIR, PROJECT_ROOT
 from local_guide.search import run_search
 from local_guide.suggest import DEFAULT_LIMIT, MAX_LIMIT, run_suggest
@@ -29,6 +35,8 @@ class SearchBody(BaseModel):
 
 
 class InsightBody(BaseModel):
+    # Accepted for backward compatibility; detail/insight ignore it and mint
+    # an isolated chat so discovery multi-turn is never polluted.
     chat_id: str | None = None
 
 
@@ -127,15 +135,27 @@ def create_app() -> FastAPI:
         business_id: str,
         chat_id: str | None = Query(default=None),
     ):
+        # chat_id query is ignored (isolated detail session).
         result = await get_business(business_id, chat_id)
         if result.get("error"):
             status = 502 if "network error" in result["error"] else 400
             raise HTTPException(status_code=status, detail=result)
         return result
 
+    @app.get("/api/business/{business_id}/reviews")
+    async def api_business_reviews(
+        business_id: str,
+        limit: int = Query(default=DEFAULT_REVIEW_LIMIT, ge=1, le=MAX_REVIEW_LIMIT),
+    ):
+        """Direct V2 find of Review entities (no LLM). Soft-fails empty on Zeus blips."""
+        result = await fetch_business_reviews(business_id, limit=limit)
+        # Soft-fail: always 200 with reviews[] so the SPA can render empty state.
+        return result
+
     @app.post("/api/business/{business_id}/insight")
     async def api_insight(business_id: str, body: InsightBody | None = None):
         body = body or InsightBody()
+        # body.chat_id ignored — insight never reuses discovery chat/Zeus session.
         result = await run_business_insight(business_id, body.chat_id)
         if result.get("error"):
             status = 502 if "network error" in result["error"] else 400
@@ -146,6 +166,15 @@ def create_app() -> FastAPI:
     if static_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
+    # AI-generated top-business photos (source of truth lives under frontend/public).
+    biz_images = PROJECT_ROOT / "frontend" / "public" / "business-images"
+    if biz_images.is_dir():
+        app.mount(
+            "/business-images",
+            StaticFiles(directory=str(biz_images)),
+            name="business-images",
+        )
+
     dist = PROJECT_ROOT / "frontend" / "dist"
     if dist.is_dir():
         assets = dist / "assets"
@@ -155,6 +184,8 @@ def create_app() -> FastAPI:
         @app.get("/{full_path:path}")
         async def spa(full_path: str):
             if full_path.startswith("api/") or full_path.startswith("static/"):
+                raise HTTPException(status_code=404, detail={"error": "not found"})
+            if full_path.startswith("business-images/"):
                 raise HTTPException(status_code=404, detail={"error": "not found"})
             candidate = dist / full_path
             if full_path and candidate.is_file():

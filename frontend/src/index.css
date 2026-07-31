@@ -19,6 +19,9 @@
   --color-secondary: #006b5f;
   --color-secondary-container: #6df5e1;
   --color-on-secondary: #ffffff;
+  --color-tertiary: #7e3000;
+  --color-tertiary-container: #a44100;
+  --color-on-tertiary: #ffffff;
   --color-outline: #777587;
   --color-outline-variant: #c7c4d8;
   --color-error: #ba1a1a;
@@ -48,16 +51,40 @@ body {
   background-image: linear-gradient(135deg, #4f46e5 0%, #14b8a6 100%);
 }
 
+/* Stitch business-details / LocalAI AI chrome */
+.ai-gradient-bg {
+  background-image: linear-gradient(135deg, #3525cd 0%, #006b5f 100%);
+}
+
+.ai-gradient-text {
+  background-image: linear-gradient(135deg, #3525cd 0%, #006b5f 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.ai-glow {
+  box-shadow: 0 0 15px rgba(109, 245, 225, 0.4);
+}
+
 .glass {
   background: rgba(255, 255, 255, 0.7);
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.2);
 }
 
-.card-shadow {
+.card-shadow,
+.shadow-l1 {
   box-shadow:
     0 4px 6px -1px rgb(0 0 0 / 0.05),
     0 2px 4px -2px rgb(0 0 0 / 0.05);
+}
+
+.shadow-l2 {
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
 }
 
 .leaflet-container {

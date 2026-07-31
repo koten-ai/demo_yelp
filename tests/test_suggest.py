@@ -1,4 +1,4 @@
-"""GET /api/suggest — fast tier typeahead (mocked run_fast_suggest path)."""
+"""GET /api/suggest — fast tier typeahead (mocked run_search path)."""
 from __future__ import annotations
 
 import pytest

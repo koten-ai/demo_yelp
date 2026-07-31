@@ -1,9 +1,9 @@
-"""Fast-tier typeahead via kotenai-zeus-client run_fast_suggest (no LLM)."""
+"""Fast-tier typeahead via kotenai-zeus-client run_search (no LLM)."""
 from __future__ import annotations
 
 from typing import Any
 
-from zeus_client import SuggestOptions, load_config, logger, run_fast_suggest_from_config
+from zeus_client import SuggestOptions, load_config, logger, run_search_from_config
 
 DEFAULT_LIMIT = 8
 MIN_QUERY_LEN = 2
@@ -97,7 +97,7 @@ async def run_suggest(query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, An
 
     try:
         cfg = await load_config()
-        result = await run_fast_suggest_from_config(
+        result = await run_search_from_config(
             q,
             cfg,
             options=SuggestOptions(
@@ -125,6 +125,9 @@ async def run_suggest(query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, An
             # Drop FTS key-only placeholders (name == biz:…).
             if name == bid and bid.startswith("biz:"):
                 continue
+            from local_guide.business_images import apply_local_images
+
+            apply_local_images(card)
             cleaned.append(card)
         return {
             "query": payload.get("query") or q,

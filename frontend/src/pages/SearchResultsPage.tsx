@@ -10,7 +10,7 @@ import { search } from "../api/client";
 import { useSearchLoadingLabel } from "../lib/useCorpus";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { appendTrace } from "../lib/trace";
-import { getChatId, loadLastSearch, saveLastSearch } from "../state/session";
+import { clearSession, loadLastSearch, saveLastSearch } from "../state/session";
 import type { BusinessCard as Card } from "../api/types";
 
 type LocState = {
@@ -61,7 +61,11 @@ export default function SearchResultsPage() {
     setLoading(true);
     setError("");
     try {
-      const data = await search(q, getChatId() || state.chatId || cached?.chatId);
+      // Each Explore submit is a new discovery intent (same as landing).
+      // Never reuse prior chat_id/zeus session — detail visits and older
+      // queries can leave tool history that bleeds into synthesis answers.
+      clearSession();
+      const data = await search(q, null);
       appendTrace(q, data);
       const ans = summaryFromResponse(data.answer, data.structured_answer);
       setAnswer(ans);

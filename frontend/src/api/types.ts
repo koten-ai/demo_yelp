@@ -12,6 +12,8 @@ export type BusinessCard = {
   name: string;
   description: string;
   image: string;
+  /** Optional gallery (local AI assets under /business-images/<id>/). */
+  images?: string[];
   business_id?: string;
   rating?: string;
   review_count?: string;
@@ -31,7 +33,7 @@ export type BusinessCard = {
   source?: string;
 };
 
-/** GET /api/suggest — no-LLM fast tier (run_fast_suggest). */
+/** GET /api/suggest — no-LLM fast tier (run_search). */
 export type SuggestResponse = {
   query: string;
   results: BusinessCard[];
@@ -68,6 +70,25 @@ export type SearchResponse = {
   error?: string;
 };
 
+export type ReviewItem = {
+  author: string;
+  stars: string;
+  text: string;
+  date: string;
+  review_id?: string;
+};
+
+export type ReviewsResponse = {
+  business_id: string;
+  reviews: ReviewItem[];
+  count: number;
+  source?: string;
+  sources?: string[];
+  req_id?: string;
+  error?: string | null;
+  ai_process_result?: boolean;
+};
+
 export type InsightResponse = {
   business_id: string;
   business?: BusinessCard | null;
@@ -75,7 +96,8 @@ export type InsightResponse = {
   the_good: string[];
   the_bad: string[];
   best_for: string[];
-  reviews: { author: string; stars: string; text: string; date: string }[];
+  reviews: ReviewItem[];
+  reviews_source?: string;
   chat_id?: string;
   trace?: Record<string, unknown>;
   answer?: string;
@@ -87,12 +109,19 @@ export type UiBusiness = {
   title: string;
   description: string;
   image: string;
+  /** Gallery paths when local AI images exist for this business. */
+  images: string[];
   rating: number | null;
   reviewCount: string;
   categories: string;
   priceLabel: string;
   isOpen: boolean | null;
+  hoursToday: string;
   location: string;
+  address: string;
+  city: string;
+  state: string;
+  url: string;
   latitude: number | null;
   longitude: number | null;
   raw: BusinessCard;

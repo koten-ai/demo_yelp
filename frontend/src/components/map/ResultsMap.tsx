@@ -26,22 +26,44 @@ function FitBounds({ points }: { points: [number, number][] }) {
   return null;
 }
 
-export default function ResultsMap({ items }: { items: UiBusiness[] }) {
+export default function ResultsMap({
+  items,
+  compact = false,
+}: {
+  items: UiBusiness[];
+  /** Shorter map for detail sidebar (h-48). */
+  compact?: boolean;
+}) {
   const points = items
     .filter((b) => b.latitude != null && b.longitude != null)
     .map((b) => [b.latitude!, b.longitude!] as [number, number]);
 
+  const minH = compact ? "min-h-[12rem]" : "min-h-[320px]";
+  const wrapMin = compact ? "min-h-[12rem]" : "min-h-[320px]";
+  const emptyMin = compact ? "min-h-[12rem]" : "min-h-[280px]";
+
   if (!points.length) {
     return (
-      <div className="h-full min-h-[280px] rounded-2xl bg-surface-container flex items-center justify-center text-on-surface-variant text-sm p-6 text-center">
+      <div
+        className={`h-full ${emptyMin} rounded-2xl bg-surface-container flex items-center justify-center text-on-surface-variant text-sm p-6 text-center`}
+      >
         No map coordinates in these results. List view still works.
       </div>
     );
   }
 
   return (
-    <div className="h-full min-h-[320px] rounded-2xl overflow-hidden border border-outline-variant/40">
-      <MapContainer center={points[0]} zoom={12} scrollWheelZoom className="h-full min-h-[320px]">
+    <div
+      className={`h-full ${wrapMin} ${
+        compact ? "rounded-none border-0" : "rounded-2xl border border-outline-variant/40"
+      } overflow-hidden`}
+    >
+      <MapContainer
+        center={points[0]}
+        zoom={compact ? 14 : 12}
+        scrollWheelZoom={!compact}
+        className={`h-full ${minH}`}
+      >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"

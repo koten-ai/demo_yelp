@@ -1,3 +1,4 @@
+/** Discovery multi-turn chat id (landing / Explore / Ask AI). Not detail/insight. */
 const CHAT_KEY = "localai.chat_id";
 const LAST_RESULTS_KEY = "localai.last_results";
 const LAST_ANSWER_KEY = "localai.last_answer";
@@ -12,6 +13,7 @@ export function setChatId(id: string | null) {
   else localStorage.setItem(CHAT_KEY, id);
 }
 
+/** Drop discovery chat + last search cache (new search intent / isolation). */
 export function clearSession() {
   localStorage.removeItem(CHAT_KEY);
   localStorage.removeItem(LAST_RESULTS_KEY);

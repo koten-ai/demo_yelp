@@ -17,7 +17,19 @@ const PLACEHOLDER =
 function looksLikeImageUrl(s: string): boolean {
   if (!s) return false;
   if (s.startsWith("data:image")) return true;
+  // Local AI-generated assets under frontend/public (and backend mount).
+  if (s.startsWith("/business-images/")) return true;
+  if (s.startsWith("/")) return /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(s);
   return /^https?:\/\//i.test(s) && /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(s);
+}
+
+function localGallery(businessId: string, card: BusinessCard): string[] {
+  const fromCard = (card.images || [])
+    .map((u) => (typeof u === "string" ? u.trim() : ""))
+    .filter((u) => looksLikeImageUrl(u));
+  if (fromCard.length) return fromCard;
+  if (card.image && looksLikeImageUrl(card.image)) return [card.image];
+  return [];
 }
 
 export function normalizeBusiness(card: BusinessCard, index = 0): UiBusiness {
@@ -30,22 +42,32 @@ export function normalizeBusiness(card: BusinessCard, index = 0): UiBusiness {
   let isOpen: boolean | null = null;
   if (card.is_open === "true") isOpen = true;
   if (card.is_open === "false") isOpen = false;
-  const image =
-    card.image && looksLikeImageUrl(card.image) ? card.image : PLACEHOLDER;
+  const gallery = localGallery(id, card);
+  const primary =
+    (card.image && looksLikeImageUrl(card.image) && card.image) ||
+    gallery[0] ||
+    "";
+  const image = primary || PLACEHOLDER;
 
   return {
     id,
     title: card.name || "Unknown",
     description: card.description || "",
     image,
+    images: gallery.length ? gallery : primary ? [primary] : [],
     rating: Number.isFinite(ratingRaw) ? ratingRaw : null,
     reviewCount: card.review_count || "",
     categories: card.categories || "",
     priceLabel: card.price || "",
     isOpen,
+    hoursToday: (card.hours_today || "").trim(),
     location:
       card.location ||
       [card.address, card.city, card.state].filter(Boolean).join(", "),
+    address: (card.address || "").trim(),
+    city: (card.city || "").trim(),
+    state: (card.state || "").trim(),
+    url: (card.url || "").trim(),
     latitude: Number.isFinite(lat) ? lat : null,
     longitude: Number.isFinite(lon) ? lon : null,
     raw: card,

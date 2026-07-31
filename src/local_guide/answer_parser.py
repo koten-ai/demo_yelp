@@ -266,4 +266,9 @@ def structured_answer_to_results(data: dict[str, Any] | None) -> list[dict[str, 
         if isinstance(item, dict):
             add_card(item)
 
+    from local_guide.business_images import apply_local_images
+
+    for card in results:
+        apply_local_images(card)
+
     return results[:MAX_RESULTS]

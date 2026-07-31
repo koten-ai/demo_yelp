@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# LocalAI API image (FastAPI + kotenai-zeus-client @ 0.2.1-alpha).
+# LocalAI API image (FastAPI + kotenai-zeus-client @ 0.3.0-alpha).
 #
 # Release pin (default) — build from this directory with BuildKit + SSH agent
 # (private repo koten-ai/zeus_client_python):
@@ -8,7 +8,7 @@
 #   DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend -t local-guide-backend .
 #
 # Override the client ref:
-#   --build-arg ZEUS_CLIENT_GIT_REF=0.2.1-alpha
+#   --build-arg ZEUS_CLIENT_GIT_REF=0.3.0-alpha
 #
 # Monorepo offline fallback (no git auth) — build from monorepo parent and
 # install the sibling checkout instead of the git tag:
@@ -35,7 +35,7 @@ RUN apt-get update \
 # ---------------------------------------------------------------------------
 FROM base AS release
 
-ARG ZEUS_CLIENT_GIT_REF=0.2.1-alpha
+ARG ZEUS_CLIENT_GIT_REF=0.3.0-alpha
 ARG ZEUS_CLIENT_GIT_URL=ssh://git@github.com/koten-ai/zeus_client_python.git
 
 COPY pyproject.toml ./
@@ -52,7 +52,7 @@ RUN --mount=type=ssh \
         "httpx==0.28.1" \
         "python-multipart==0.0.20" \
     && pip install --no-cache-dir --no-deps -e . \
-    && python -c "from importlib.metadata import version; v=version('kotenai-zeus-client'); print(f'kotenai-zeus-client={v}'); assert v.startswith('0.2.'), v"
+    && python -c "from importlib.metadata import version; v=version('kotenai-zeus-client'); print(f'kotenai-zeus-client={v}'); assert v.startswith('0.3.'), v"
 
 ENV PORT=5000
 ENV ZEUS_CLIENT_CONFIG_DIR=/app

@@ -19,7 +19,7 @@ services:
       #   target: release
       #   ssh: [default]
       #   args:
-      #     ZEUS_CLIENT_GIT_REF: "0.2.1-alpha"
+      #     ZEUS_CLIENT_GIT_REF: "0.3.0-alpha"
     image: local-guide-backend:local
     container_name: local-guide-backend
     ports:
@@ -36,10 +36,13 @@ services:
       COUCHBASE_USERNAME: "Administrator"
       COUCHBASE_PASSWORD: "password"
       PORT: "5000"
+      BUSINESS_IMAGES_BASE_URL: "https://koten-yelp-demo-photos.nyc3.cdn.digitaloceanspaces.com/business-images"
     volumes:
       - ./config.json:/app/config.json
       - ./data:/app/data
       - ./src/local_guide:/app/src/local_guide
+      # AI-generated top-business photos (served at /business-images).
+      - ./frontend/public/business-images:/app/frontend/public/business-images
       # Live cascade of kotenai-zeus-client edits (matches editable install path).
       - ../zeus_client_python:/opt/zeus_client_python
     extra_hosts:

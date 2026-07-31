@@ -1,6 +1,6 @@
 # LocalAI (Yelp Demo)
 
-Natural-language local business discovery over the Couchbase **`yelp-demo`** bucket, powered by [Zeus](https://github.com/koten-ai) and [`kotenai-zeus-client` **0.2.1-alpha**](https://github.com/koten-ai/zeus_client_python/releases/tag/0.2.1-alpha) (`run_agent`). React SPA UI follows Stitch designs in `../stitch_ai_local_guide/`.
+Natural-language local business discovery over the Couchbase **`yelp-demo`** bucket, powered by [Zeus](https://github.com/koten-ai) and [`kotenai-zeus-client` **0.3.0-alpha**](https://github.com/koten-ai/zeus_client_python/releases/tag/0.3.0-alpha) (`run_agent`, `run_search`, `run_verb` / `run_find`). React SPA UI follows Stitch designs in `../stitch_ai_local_guide/`.
 
 ## Features
 
@@ -26,8 +26,8 @@ cp config.example.json config.json
 python3 -m venv .venv && source .venv/bin/activate
 # Monorepo co-dev: pyproject points at file:../zeus_client_python
 pip install -e ".[dev]"
-python -c "from importlib.metadata import version; print(version('kotenai-zeus-client'))"  # expect 0.2.1
-python -c "from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER; print('client ok')"
+python -c "from importlib.metadata import version; print(version('kotenai-zeus-client'))"  # expect 0.3.0
+python -c "from zeus_client import run_find, run_verb; from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER; print('client ok')"
 python -m local_guide
 ```
 
@@ -116,10 +116,11 @@ Same-origin via nginx means the browser talks only to the frontend origin; CORS 
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/api/search` | One agent turn `{query, chat_id?, ai_process_result?}` |
-| GET | `/api/suggest?q=&limit=` | No-LLM typeahead (`run_fast_suggest` — FTS + N1QL hydrate) |
+| GET | `/api/suggest?q=&limit=` | No-LLM typeahead (`run_search` — FTS + N1QL hydrate) |
 | GET | `/api/tool-order` | Trace panel tool axes |
 | GET | `/api/health` | Liveness + `zeus_client_version` + corpus size |
 | GET | `/api/business/{id}` | Detail seed |
+| GET | `/api/business/{id}/reviews` | Reviews via V2 `find` (`run_verb_from_config`) + optional N1QL hydrate |
 | POST | `/api/business/{id}/insight` | AI review summary |
 
 Home SearchBar debounces `/api/suggest` (~280ms); Enter without a highlighted row runs full `/api/search`. Soft-fails empty so the dropdown stays quiet.
@@ -145,7 +146,8 @@ cd frontend && npm run build
 ```
 demo_yelp/
 ├── src/local_guide/     # FastAPI + agent wrapper
-├── frontend/            # React SPA
+├── frontend/            # React SPA (+ public/business-images)
+├── scripts/             # finalize / Spaces upload / helpers
 ├── docker/              # nginx template for Dockerfile.frontend
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
@@ -156,6 +158,40 @@ demo_yelp/
 
 Built with the [Demo Builder Kit](../zeus_client_python/docs/demo-builder/). Reference: `../demo_travel_sample`.
 
+## Business images (local + Spaces CDN)
+
+Layout under `frontend/public/business-images/`:
+
+```text
+business-images/
+  manifest.json
+  biz:<business_id>/
+    1.png
+    2.png
+    3.png
+```
+
+By default the API serves these at relative `/business-images/...`. For a public
+CDN (DO Space `koten-yelp-demo-photos`):
+
+```bash
+# 1) Upload tree (public-read). Needs DO_SPACES_KEY / DO_SPACES_SECRET.
+./scripts/upload_business_images_spaces.sh
+
+# 2) Stamp manifest + Couchbase with absolute CDN URLs
+export BUSINESS_IMAGES_BASE_URL=https://koten-yelp-demo-photos.nyc3.cdn.digitaloceanspaces.com/business-images
+python3 scripts/finalize_business_images.py
+```
+
+| Variable | Purpose |
+|----------|---------|
+| `BUSINESS_IMAGES_BASE_URL` | Optional absolute prefix (no trailing slash). When set, catalog + finalize emit CDN URLs instead of `/business-images/...` |
+| `DO_SPACES_PHOTOS_BUCKET` | default `koten-yelp-demo-photos` |
+| `DO_SPACES_PHOTOS_REGION` | default `nyc3` |
+| `FINALIZE_SKIP_COUCHBASE` | `1` to rebuild manifest only |
+
+Enable **CDN** on that Space in the DO UI. Keep data/backup Spaces private.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -164,4 +200,5 @@ Built with the [Demo Builder Kit](../zeus_client_python/docs/demo-builder/). Ref
 | `llm_provider has no api_key` | Edit `config.json` |
 | Empty cards | Check Zeus data + mode catalog sync |
 | Docker cannot reach Zeus | Use `host.docker.internal` |
-| No photos | Academic Yelp dump often has none; placeholders are expected |
+| No photos | Academic Yelp dump often has none; generate under `frontend/public/business-images` or set CDN base |
+| CDN images 403 | Public-read ACL / bucket policy; probe with `curl -I` on the `.cdn.` URL |

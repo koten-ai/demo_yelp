@@ -343,6 +343,8 @@ def _rows_from_tool_call(rec: dict) -> list[dict]:
 
 def zeus_data_to_results(zeus_data: list[dict] | None) -> list[dict[str, str]]:
     """Convert schema-filtered zeus_data rows into business cards."""
+    from local_guide.business_images import apply_local_images
+
     if not zeus_data:
         return []
 
@@ -356,6 +358,7 @@ def zeus_data_to_results(zeus_data: list[dict] | None) -> list[dict[str, str]]:
         if key in seen:
             continue
         seen.add(key)
+        apply_local_images(card)
         results.append(card)
         if len(results) >= MAX_RESULTS:
             break
@@ -364,6 +367,8 @@ def zeus_data_to_results(zeus_data: list[dict] | None) -> list[dict[str, str]]:
 
 def extract_businesses(trace: dict | None) -> list[dict[str, str]]:
     """Walk trace tool_calls and return normalized business cards."""
+    from local_guide.business_images import apply_local_images
+
     if not trace:
         return []
 
@@ -379,6 +384,7 @@ def extract_businesses(trace: dict | None) -> list[dict[str, str]]:
             if key in seen:
                 continue
             seen.add(key)
+            apply_local_images(card)
             results.append(card)
             if len(results) >= MAX_RESULTS:
                 return results
