@@ -86,16 +86,18 @@ export default function ConversationalSearchPage() {
           </div>
         )}
         {turns.map((t, i) => (
-          <div key={i} className={t.role === "user" ? "flex justify-end" : ""}>
+          <div key={i} className={t.role === "user" ? "flex justify-end" : "w-full"}>
             <div
-              className={`max-w-[90%] rounded-2xl px-4 py-3 ${
+              className={`rounded-2xl px-4 py-3 ${
                 t.role === "user"
-                  ? "bg-primary text-on-primary"
-                  : "bg-surface-container-lowest border border-outline-variant/40"
+                  ? "max-w-[90%] bg-primary text-on-primary"
+                  : "w-full max-w-full bg-surface-container-lowest border border-outline-variant/40"
               }`}
             >
               {t.role === "assistant" ? (
-                <div className="text-sm">{renderSimpleMarkdown(t.text)}</div>
+                <div className="text-sm text-on-surface overflow-x-auto">
+                  {renderSimpleMarkdown(t.text)}
+                </div>
               ) : (
                 <p className="text-sm whitespace-pre-wrap">{t.text}</p>
               )}
