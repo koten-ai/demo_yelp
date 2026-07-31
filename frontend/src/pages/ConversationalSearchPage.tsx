@@ -2,6 +2,7 @@ import { useState } from "react";
 import BusinessCard from "../components/results/BusinessCard";
 import { ErrorBanner, LoadingBlock } from "../components/common/States";
 import { search } from "../api/client";
+import { useSearchLoadingLabel } from "../lib/useCorpus";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { renderSimpleMarkdown } from "../lib/simpleMarkdown";
 import { appendTrace } from "../lib/trace";
@@ -19,6 +20,7 @@ export default function ConversationalSearchPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const loadingLabel = useSearchLoadingLabel("Querying");
 
   async function send() {
     const q = input.trim();
@@ -111,7 +113,7 @@ export default function ConversationalSearchPage() {
             </div>
           </div>
         ))}
-        {loading && <LoadingBlock label="Thinking with Zeus…" />}
+        {loading && <LoadingBlock label={loadingLabel} />}
       </div>
 
       <form

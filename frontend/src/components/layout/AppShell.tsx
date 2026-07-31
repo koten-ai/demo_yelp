@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchHealth } from "../../api/client";
 import { ensureTraceScript } from "../../lib/trace";
+import { setCorpusFromHealth } from "../../state/corpus";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `flex flex-col items-center gap-0.5 text-xs font-medium ${
@@ -17,9 +18,12 @@ export default function AppShell() {
     let cancelled = false;
     fetchHealth()
       .then((h) => {
-        if (!cancelled && h?.zeus_client_version) {
+        if (cancelled) return;
+        if (h?.zeus_client_version) {
           setZeusClientVersion(h.zeus_client_version);
         }
+        // Corpus size for search loaders: "Searching N businesses…"
+        setCorpusFromHealth(h || {});
       })
       .catch(() => {
         /* keep null; chrome still renders without a version pin */

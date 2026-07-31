@@ -7,6 +7,7 @@ import AreaSummary from "../components/results/AreaSummary";
 import ResultsMap from "../components/map/ResultsMap";
 import { EmptyState, ErrorBanner, LoadingBlock } from "../components/common/States";
 import { search } from "../api/client";
+import { useSearchLoadingLabel } from "../lib/useCorpus";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { appendTrace } from "../lib/trace";
 import { getChatId, loadLastSearch, saveLastSearch } from "../state/session";
@@ -23,6 +24,7 @@ export default function SearchResultsPage() {
   const loc = useLocation();
   const state = (loc.state || {}) as LocState;
   const cached = loadLastSearch();
+  const loadingLabel = useSearchLoadingLabel("Searching");
 
   const initialResults = (state.results || (cached?.results as Card[]) || []) as Card[];
   const [query, setQuery] = useState(state.query || cached?.query || "");
@@ -102,7 +104,7 @@ export default function SearchResultsPage() {
         </div>
       )}
 
-      {loading && <LoadingBlock />}
+      {loading && <LoadingBlock label={loadingLabel} />}
 
       {!loading && answer && (
         <div className="mt-6">
@@ -118,11 +120,11 @@ export default function SearchResultsPage() {
               body="Try a new natural-language query or clear filters."
             />
           ) : (
-            filtered.map((b) => <BusinessCard key={b.id} business={b} compact />)
+            !loading && filtered.map((b) => <BusinessCard key={b.id} business={b} compact />)
           )}
         </div>
         <div className="lg:col-span-5 lg:sticky lg:top-24 h-[420px]">
-          <ResultsMap items={filtered} />
+          <ResultsMap items={loading ? [] : filtered} />
         </div>
       </div>
     </div>

@@ -32,9 +32,15 @@ export function EmptyState({ title, body }: { title: string; body?: string }) {
 
 export function LoadingBlock({ label = "Searching with Zeus…" }: { label?: string }) {
   return (
-    <div className="flex items-center justify-center gap-3 py-12 text-primary">
-      <span className="material-symbols-outlined animate-spin">progress_activity</span>
-      <span className="text-sm font-medium">{label}</span>
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-col items-center justify-center gap-2 py-12 text-primary"
+    >
+      <div className="flex items-center justify-center gap-3">
+        <span className="material-symbols-outlined animate-spin">progress_activity</span>
+        <span className="text-sm font-medium">{label}</span>
+      </div>
     </div>
   );
 }

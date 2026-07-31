@@ -65,29 +65,34 @@ CMD ["python", "-m", "local_guide"]
 # ---------------------------------------------------------------------------
 # monorepo: install sibling zeus_client_python from build context parent
 # Build context: koten-ai/  target: monorepo
+#
+# Editable install at /opt/zeus_client_python so Compose can bind-mount the
+# host checkout for live co-dev (see docker-compose.yml).
 # ---------------------------------------------------------------------------
 FROM base AS monorepo
 
-COPY zeus_client_python /tmp/zeus_client_python
+COPY zeus_client_python /opt/zeus_client_python
 COPY demo_yelp/pyproject.toml ./
 COPY demo_yelp/src ./src
 COPY demo_yelp/data ./data
 COPY demo_yelp/config.example.json ./
 
-RUN pip install --no-cache-dir /tmp/zeus_client_python \
+RUN pip install --no-cache-dir -e /opt/zeus_client_python \
     && pip install --no-cache-dir \
         "fastapi==0.115.6" \
         "uvicorn[standard]==0.34.0" \
         "httpx==0.28.1" \
         "python-multipart==0.0.20" \
     && pip install --no-cache-dir --no-deps -e . \
-    && rm -rf /tmp/zeus_client_python \
-    && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client'))"
+    && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client')); from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER" \
+    && test -d /opt/zeus_client_python/src
 
 ENV PORT=5000
 ENV ZEUS_CLIENT_CONFIG_DIR=/app
 ENV ZEUS_CHAT_REQUESTS_DIR=/app/data/chat_requests
 ENV CHAT_LOG_PATH=/app/data/chats.jsonl
+# Used by local_guide.__main__ so uvicorn reload watches the client tree too.
+ENV ZEUS_CLIENT_SRC=/opt/zeus_client_python/src
 
 EXPOSE 5000
 CMD ["python", "-m", "local_guide"]

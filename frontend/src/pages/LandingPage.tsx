@@ -3,8 +3,9 @@ import { useNavigate } from "react-router-dom";
 import SearchBar from "../components/search/SearchBar";
 import TypingSuggestionChip from "../components/search/TypingSuggestionChip";
 import BusinessCard from "../components/results/BusinessCard";
-import { ErrorBanner } from "../components/common/States";
+import { ErrorBanner, LoadingBlock } from "../components/common/States";
 import { search } from "../api/client";
+import { useSearchLoadingLabel } from "../lib/useCorpus";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { appendTrace } from "../lib/trace";
 import { clearSession, loadLastSearch, saveLastSearch } from "../state/session";
@@ -15,10 +16,17 @@ export default function LandingPage() {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const loadingLabel = useSearchLoadingLabel("Searching");
   const last = loadLastSearch();
   const recommended: UiBusiness[] = (last?.results as Card[] | undefined)
     ?.slice(0, 3)
     .map((c, i) => normalizeBusiness(c, i)) || [];
+
+  function openSuggestion(card: Card) {
+    const id = (card.business_id || card.name || "").trim();
+    if (!id) return;
+    nav(`/business/${encodeURIComponent(id)}`, { state: { business: card } });
+  }
 
   async function run() {
     const query = q.trim();
@@ -55,8 +63,8 @@ export default function LandingPage() {
 
   return (
     <div>
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 ai-gradient opacity-[0.08]" />
+      <section className="relative overflow-visible">
+        <div className="pointer-events-none absolute inset-0 ai-gradient opacity-[0.08]" aria-hidden />
         <div className="relative mx-auto max-w-[1280px] px-4 md:px-10 py-16 md:py-24 text-center">
           <p className="inline-flex items-center gap-1 text-xs font-mono uppercase tracking-widest text-primary mb-4">
             <span className="material-symbols-outlined text-[16px]">auto_awesome</span>
@@ -68,7 +76,8 @@ export default function LandingPage() {
           <p className="mt-4 text-on-surface-variant max-w-xl mx-auto">
             Natural language search over the yelp-demo knowledge graph via Zeus.
           </p>
-          <div className="mt-8 flex flex-col items-center gap-4 w-full">
+          {/* z-40: suggest list above feature strip / mobile nav (z-30) */}
+          <div className="relative z-40 mt-8 flex flex-col items-center gap-4 w-full">
             <div className="flex justify-center w-full">
               <SearchBar
                 value={q}
@@ -76,10 +85,13 @@ export default function LandingPage() {
                 onSubmit={run}
                 loading={loading}
                 large
+                enableSuggest
+                onSelectSuggestion={openSuggestion}
                 placeholder="Describe what you need, or attach an image..."
               />
             </div>
-            <TypingSuggestionChip onSelect={setQ} />
+            {!loading && <TypingSuggestionChip onSelect={setQ} />}
+            {loading && <LoadingBlock label={loadingLabel} />}
           </div>
           {error && (
             <div className="mt-6 max-w-xl mx-auto text-left">

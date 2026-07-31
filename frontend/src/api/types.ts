@@ -2,6 +2,10 @@
 export type HealthResponse = {
   ok: boolean;
   zeus_client_version: string;
+  /** Live or configured corpus size for search-loader copy. */
+  business_count?: number | null;
+  corpus_label?: string;
+  corpus_source?: string;
 };
 
 export type BusinessCard = {
@@ -22,6 +26,22 @@ export type BusinessCard = {
   latitude?: string;
   longitude?: string;
   url?: string;
+  /** Typeahead-only extras from GET /api/suggest */
+  subtitle?: string;
+  source?: string;
+};
+
+/** GET /api/suggest — no-LLM fast tier (run_fast_suggest). */
+export type SuggestResponse = {
+  query: string;
+  results: BusinessCard[];
+  count: number;
+  source: string;
+  sources?: string[];
+  fast_tier?: boolean;
+  ai_process_result?: boolean;
+  target?: string;
+  error?: string | null;
 };
 
 export type SearchResponse = {

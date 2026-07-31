@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 
 from local_guide.async_lifecycle import lifespan
 from local_guide.chat_store import CHATS
+from local_guide.corpus import resolve_search_corpus
 from local_guide.detail import get_business, run_business_insight
 from local_guide.paths import PACKAGE_DIR, PROJECT_ROOT
 from local_guide.search import run_search
+from local_guide.suggest import DEFAULT_LIMIT, MAX_LIMIT, run_suggest
 from local_guide.zeus_config import configure_zeus_client
 
 configure_zeus_client()
@@ -80,10 +82,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/health")
     async def health():
+        corpus = await resolve_search_corpus()
         return {
             "ok": True,
             # Running zeus_client_python / kotenai-zeus-client — UI chrome source of truth.
             "zeus_client_version": zeus_client_version(),
+            # Search loader: "Searching {business_count} {corpus_label}…"
+            "business_count": corpus.get("business_count"),
+            "corpus_label": corpus.get("corpus_label") or "businesses",
+            "corpus_source": corpus.get("corpus_source") or "none",
         }
 
     @app.post("/api/search")
@@ -100,6 +107,14 @@ def create_app() -> FastAPI:
             status = 502 if "network error" in result["error"] else 400
             raise HTTPException(status_code=status, detail=result)
         return result
+
+    @app.get("/api/suggest")
+    async def api_suggest(
+        q: str = Query(default=""),
+        limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    ):
+        """No-LLM typeahead (Zeus FTS + optional N1QL hydrate). Soft-fails empty."""
+        return await run_suggest(q, limit=limit)
 
     @app.get("/api/tool-order")
     async def api_tool_order():

@@ -24,11 +24,10 @@ cd demo_yelp
 cp config.example.json config.json
 # edit config.json: llm_provider.api_key, zeus url/password
 python3 -m venv .venv && source .venv/bin/activate
-# Pulls kotenai-zeus-client from git tag 0.2.1-alpha (SSH access to private repo).
+# Monorepo co-dev: pyproject points at file:../zeus_client_python
 pip install -e ".[dev]"
-# Optional local client override while developing the library:
-#   pip install -e ../zeus_client_python
 python -c "from importlib.metadata import version; print(version('kotenai-zeus-client'))"  # expect 0.2.1
+python -c "from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER; print('client ok')"
 python -m local_guide
 ```
 
@@ -47,21 +46,21 @@ Images are split for staging/production reuse:
 
 | File | Image role |
 |------|------------|
-| `Dockerfile.backend` | FastAPI + **kotenai-zeus-client @ `0.2.1-alpha`** (default `target: release`) |
+| `Dockerfile.backend` | FastAPI + **kotenai-zeus-client** — Compose default **`target: monorepo`** (sibling editable + bind-mount). Release git tag: `target: release` |
 | `Dockerfile.frontend` | Vite build + nginx SPA; proxies `/api` + `/static` → API |
 
 ```bash
 cd demo_yelp
 cp config.example.json config.json   # fill keys
 
-# Local stack (API :5000, nginx UI :3000)
-# Backend build needs SSH agent access to github.com/koten-ai/zeus_client_python
-eval "$(ssh-agent -s)" && ssh-add   # if needed
+# Local stack (API :5000, nginx UI :3000) — monorepo client co-dev (no SSH)
 DOCKER_BUILDKIT=1 docker compose up --build
 
 # Optional Vite HMR on :5173
 DOCKER_BUILDKIT=1 docker compose --profile dev up --build
 ```
+
+Client source is bind-mounted at `/opt/zeus_client_python`; backend `ENVIRONMENT=dev` reloads on client + app edits.
 
 - UI (nginx / staging-shaped): http://localhost:3000  
 - API direct: http://localhost:5000  
@@ -72,13 +71,14 @@ DOCKER_BUILDKIT=1 docker compose --profile dev up --build
 ### Build images alone (CI / staging / prod)
 
 ```bash
-# Release pin (default) — from this directory; requires BuildKit + SSH to private client repo
-cd demo_yelp
-DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend -t local-guide-backend:TAG .
-
-# Offline monorepo fallback — from monorepo parent; installs sibling checkout (not the git tag)
+# Monorepo co-dev image — from monorepo parent (Compose default)
 cd ..
 DOCKER_BUILDKIT=1 docker build -f demo_yelp/Dockerfile.backend --target monorepo \
+  -t local-guide-backend:TAG .
+
+# Release pin — from demo_yelp/; requires BuildKit + SSH to private client repo
+cd demo_yelp
+DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend --target release \
   -t local-guide-backend:TAG .
 
 # Frontend — from demo_yelp/
@@ -115,11 +115,14 @@ Same-origin via nginx means the browser talks only to the frontend origin; CORS 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/search` | One agent turn `{query, chat_id?}` |
+| POST | `/api/search` | One agent turn `{query, chat_id?, ai_process_result?}` |
+| GET | `/api/suggest?q=&limit=` | No-LLM typeahead (`run_fast_suggest` — FTS + N1QL hydrate) |
 | GET | `/api/tool-order` | Trace panel tool axes |
-| GET | `/api/health` | Liveness |
+| GET | `/api/health` | Liveness + `zeus_client_version` + corpus size |
 | GET | `/api/business/{id}` | Detail seed |
 | POST | `/api/business/{id}/insight` | AI review summary |
+
+Home SearchBar debounces `/api/suggest` (~280ms); Enter without a highlighted row runs full `/api/search`. Soft-fails empty so the dropdown stays quiet.
 
 Success search payload matches the Demo Builder kit contract (answer, results, trace, chat_id, session fields, …) with Yelp-oriented card fields.
 

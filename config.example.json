@@ -54,5 +54,18 @@
       "scope": "_default",
       "collection": "_default"
     }
+  },
+
+  "couchbase": {
+    "_comment": "Optional Query-service hydrate for GET /api/suggest (FTS src_keys → card fields). Docker: host.docker.internal:8093. Also: COUCHBASE_QUERY_URL / COUCHBASE_USERNAME / COUCHBASE_PASSWORD.",
+    "query_url": "http://host.docker.internal:8093",
+    "username": "Administrator",
+    "password": "password"
+  },
+
+  "ui": {
+    "_comment": "Search loader copy. Omit business_count to use live Hub collection_counts for the default sample.",
+    "corpus_label": "businesses",
+    "business_count": null
   }
 }

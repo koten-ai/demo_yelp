@@ -1,4 +1,9 @@
-import type { HealthResponse, InsightResponse, SearchResponse } from "./types";
+import type {
+  HealthResponse,
+  InsightResponse,
+  SearchResponse,
+  SuggestResponse,
+} from "./types";
 
 async function parseJson(res: Response) {
   const data = await res.json().catch(() => ({}));
@@ -6,6 +11,55 @@ async function parseJson(res: Response) {
     throw new Error((data && data.error) || res.statusText || "Request failed");
   }
   return data;
+}
+
+/** Soft-fail typeahead — empty results on error so the combobox stays quiet. */
+export async function fetchSuggest(
+  query: string,
+  limit = 8
+): Promise<SuggestResponse> {
+  const q = (query || "").trim();
+  const empty: SuggestResponse = {
+    query: q,
+    results: [],
+    count: 0,
+    source: "none",
+    fast_tier: true,
+    ai_process_result: false,
+  };
+  if (q.length < 2) return empty;
+  try {
+    const params = new URLSearchParams({
+      q,
+      limit: String(Math.max(1, Math.min(limit, 20))),
+    });
+    const res = await fetch(`/api/suggest?${params}`);
+    const data = (await res.json().catch(() => ({}))) as SuggestResponse;
+    if (!res.ok) {
+      return {
+        ...empty,
+        source: "error",
+        error: (data && (data as { error?: string }).error) || res.statusText,
+      };
+    }
+    return {
+      query: data.query ?? q,
+      results: Array.isArray(data.results) ? data.results : [],
+      count: typeof data.count === "number" ? data.count : (data.results || []).length,
+      source: data.source || "empty",
+      sources: data.sources,
+      fast_tier: data.fast_tier ?? true,
+      ai_process_result: false,
+      target: data.target,
+      error: data.error ?? null,
+    };
+  } catch (e) {
+    return {
+      ...empty,
+      source: "error",
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
 }
 
 export async function fetchHealth(): Promise<HealthResponse> {
