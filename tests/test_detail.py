@@ -12,8 +12,10 @@ from local_guide.detail import (
     fetch_business_via_find,
     get_business,
     normalize_yelp_business_id,
+    normalize_yelp_user_id,
     parse_insight_answer,
     run_business_insight,
+    yelp_user_doc_key,
 )
 
 
@@ -52,6 +54,13 @@ def test_normalize_yelp_business_id_strips_biz_prefix():
     assert normalize_yelp_business_id("  biz:x  ") == "x"
 
 
+def test_normalize_yelp_user_id_and_doc_key():
+    assert normalize_yelp_user_id("user:abc") == "abc"
+    assert normalize_yelp_user_id("abc") == "abc"
+    assert yelp_user_doc_key("N-BU6kAHGxm3Fd4hpNHcjA") == "user:N-BU6kAHGxm3Fd4hpNHcjA"
+    assert yelp_user_doc_key("user:N-BU6kAHGxm3Fd4hpNHcjA") == "user:N-BU6kAHGxm3Fd4hpNHcjA"
+
+
 def test_review_row_to_ui_maps_fields():
     row = {
         "user_id": "user_short",
@@ -66,6 +75,44 @@ def test_review_row_to_ui_maps_fields():
     assert ui["text"] == "Great tacos"
     assert ui["date"].startswith("2018")
     assert ui["review_id"] == "revXYZ"
+    assert ui["user_id"] == "user_short"
+    assert ui["user_review_count"] == ""
+
+
+def test_review_row_to_ui_prefers_joined_user_name():
+    row = {
+        "user_id": "N-BU6kAHGxm3Fd4hpNHcjA",
+        "stars": 5,
+        "text": "Loved it",
+        "date": "2020-01-01",
+        "review_id": "r1",
+    }
+    user = {
+        "user_id": "N-BU6kAHGxm3Fd4hpNHcjA",
+        "name": "Alex",
+        "review_count": 142,
+        "average_stars": 3.8,
+        "yelping_since": "2012-03-01",
+    }
+    ui = _review_row_to_ui(row, user=user)
+    assert ui["author"] == "Alex"
+    assert ui["user_id"] == "N-BU6kAHGxm3Fd4hpNHcjA"
+    assert ui["user_review_count"] == "142"
+    assert ui["user_average_stars"] == "3.8"
+    assert ui["yelping_since"].startswith("2012")
+
+
+def test_review_row_to_ui_long_user_id_becomes_reviewer():
+    row = {
+        "user_id": "N-BU6kAHGxm3Fd4hpNHcjA",
+        "stars": 1,
+        "text": "meh",
+        "date": "2011-01-01",
+        "review_id": "r2",
+    }
+    ui = _review_row_to_ui(row)
+    assert ui["author"] == "Reviewer"
+    assert ui["user_id"] == "N-BU6kAHGxm3Fd4hpNHcjA"
 
 
 @pytest.mark.asyncio
@@ -380,19 +427,34 @@ async def test_fetch_business_reviews_uses_find_verb(monkeypatch):
         }
 
     async def fake_n1ql(cb, bucket, scope, collection, keys, **kwargs):
-        assert keys == ["rev:Fo0Io6wKKac9rDzFFAHUzg"]
         assert bucket == "yelp-data"
-        return [
-            {
-                "doc_key": "rev:Fo0Io6wKKac9rDzFFAHUzg",
-                "text": "Ok, so they have GREAT sushi.",
-                "stars": 1,
-                "date": "2011-04-01 13:11:37",
-                "user_id": "N-BU6kAHGxm3Fd4hpNHcjA",
-                "business_id": "bdth7r1brx9yRU7sYwF9jQ",
-                "review_id": "Fo0Io6wKKac9rDzFFAHUzg",
-            }
-        ]
+        # First call: review docs; second: user docs.
+        if keys and str(keys[0]).startswith("rev:"):
+            assert keys == ["rev:Fo0Io6wKKac9rDzFFAHUzg"]
+            return [
+                {
+                    "doc_key": "rev:Fo0Io6wKKac9rDzFFAHUzg",
+                    "text": "Ok, so they have GREAT sushi.",
+                    "stars": 1,
+                    "date": "2011-04-01 13:11:37",
+                    "user_id": "N-BU6kAHGxm3Fd4hpNHcjA",
+                    "business_id": "bdth7r1brx9yRU7sYwF9jQ",
+                    "review_id": "Fo0Io6wKKac9rDzFFAHUzg",
+                }
+            ]
+        if keys and str(keys[0]).startswith("user:"):
+            assert keys == ["user:N-BU6kAHGxm3Fd4hpNHcjA"]
+            return [
+                {
+                    "doc_key": "user:N-BU6kAHGxm3Fd4hpNHcjA",
+                    "user_id": "N-BU6kAHGxm3Fd4hpNHcjA",
+                    "name": "SushiFan",
+                    "review_count": 88,
+                    "average_stars": 3.2,
+                    "yelping_since": "2010-01-01",
+                }
+            ]
+        return []
 
     class FakeCB:
         @classmethod
@@ -419,8 +481,12 @@ async def test_fetch_business_reviews_uses_find_verb(monkeypatch):
     out = await fetch_business_reviews("biz:bdth7r1brx9yRU7sYwF9jQ", limit=5)
     assert calls and calls[0][0] == "find"
     assert out["count"] == 1
-    assert out["source"] == "zeus_find+n1ql"
+    assert out["source"] == "zeus_find+n1ql+users"
+    assert "n1ql_user_hydrate" in (out.get("sources") or [])
     assert "GREAT sushi" in out["reviews"][0]["text"]
+    assert out["reviews"][0]["author"] == "SushiFan"
+    assert out["reviews"][0]["user_id"] == "N-BU6kAHGxm3Fd4hpNHcjA"
+    assert out["reviews"][0]["user_review_count"] == "88"
     assert out["business_id"] == "bdth7r1brx9yRU7sYwF9jQ"
     assert out["ai_process_result"] is False
 

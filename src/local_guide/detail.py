@@ -45,6 +45,26 @@ _REVIEW_PROJECT_FIELDS = (
     "doc_key",
     "entity_type",
 )
+# Yelp academic User source docs (keys: user:<user_id>).
+_USER_N1QL_FIELDS = (
+    "user_id",
+    "name",
+    "review_count",
+    "average_stars",
+    "yelping_since",
+    "useful",
+    "funny",
+    "cool",
+)
+_USER_PROJECT_FIELDS = (
+    "user_id",
+    "name",
+    "review_count",
+    "average_stars",
+    "yelping_since",
+    "doc_key",
+    "entity_type",
+)
 # Business source docs hold card fields; graph project is a thinner fallback.
 _BUSINESS_N1QL_FIELDS = (
     "name",
@@ -168,6 +188,20 @@ def normalize_yelp_business_id(business_id: str) -> str:
     return bid
 
 
+def normalize_yelp_user_id(user_id: str) -> str:
+    """Strip optional ``user:`` prefix from Yelp academic user keys / ids."""
+    uid = (user_id or "").strip()
+    if uid.startswith("user:"):
+        return uid[5:].strip()
+    return uid
+
+
+def yelp_user_doc_key(user_id: str) -> str:
+    """Couchbase doc key for a Yelp user (``user:<bare_id>``)."""
+    bare = normalize_yelp_user_id(user_id)
+    return f"user:{bare}" if bare else ""
+
+
 def _str_field(val: Any) -> str:
     if val is None:
         return ""
@@ -175,14 +209,70 @@ def _str_field(val: Any) -> str:
     return "" if text.lower() in {"none", "null"} else text
 
 
-def _review_row_to_ui(row: dict[str, Any]) -> dict[str, str]:
-    """Map Zeus/N1QL review row → SPA review card shape."""
+def _looks_like_yelp_opaque_id(value: str) -> bool:
+    """True for bare Yelp academic ids (∼22-char base64url), not human names."""
+    s = (value or "").strip()
+    if len(s) < 16 or " " in s:
+        return False
+    return all(c.isalnum() or c in "-_" for c in s)
+
+
+def _user_lookup_keys(user_ids: list[str]) -> list[str]:
+    """Unique ``user:<id>`` keys preserving first-seen order."""
+    seen: set[str] = set()
+    keys: list[str] = []
+    for raw in user_ids:
+        key = yelp_user_doc_key(_str_field(raw))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+def _index_users_by_id(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Index hydrated User rows by bare ``user_id`` (and doc_key bare form)."""
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        uid = normalize_yelp_user_id(
+            _str_field(row.get("user_id") or row.get("doc_key") or row.get("id"))
+        )
+        if not uid:
+            continue
+        out[uid] = row
+    return out
+
+
+def _review_row_to_ui(
+    row: dict[str, Any],
+    user: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Map Zeus/N1QL review row (+ optional User doc) → SPA review card shape."""
     text = _str_field(row.get("text") or row.get("description"))
-    author = _str_field(row.get("user_id") or row.get("name") or row.get("author"))
+    bare_uid = normalize_yelp_user_id(_str_field(row.get("user_id")))
+    user_row = user if isinstance(user, dict) else None
+    if user_row is None and bare_uid and isinstance(row.get("_user"), dict):
+        user_row = row["_user"]  # type: ignore[assignment]
+
+    display_name = ""
+    user_review_count = ""
+    user_average_stars = ""
+    yelping_since = ""
+    if user_row:
+        display_name = _str_field(user_row.get("name") or user_row.get("user_name"))
+        if user_row.get("review_count") is not None:
+            user_review_count = _str_field(user_row.get("review_count"))
+        if user_row.get("average_stars") is not None:
+            user_average_stars = _str_field(user_row.get("average_stars"))
+        yelping_since = _str_field(user_row.get("yelping_since"))
+
+    author = display_name or _str_field(row.get("name") or row.get("author"))
     if not author or author == _str_field(row.get("review_id")):
-        author = _str_field(row.get("user_id")) or "Reviewer"
-    # Avoid dumping raw review_id hashes as the display name when longer.
-    if len(author) > 24 and " " not in author:
+        author = display_name or bare_uid or "Reviewer"
+    # Opaque Yelp ids are not display names when User join missed.
+    if not display_name and _looks_like_yelp_opaque_id(author):
         author = "Reviewer"
     return {
         "author": author or "Reviewer",
@@ -190,6 +280,10 @@ def _review_row_to_ui(row: dict[str, Any]) -> dict[str, str]:
         "text": text[:2000],
         "date": _str_field(row.get("date")),
         "review_id": _str_field(row.get("review_id") or row.get("doc_key") or row.get("id")),
+        "user_id": bare_uid,
+        "user_review_count": user_review_count,
+        "user_average_stars": user_average_stars,
+        "yelping_since": yelping_since,
     }
 
 
@@ -360,9 +454,77 @@ async def fetch_business_reviews(
                 source = "zeus_find+project"
                 sources.append("zeus_project")
 
+    # Batch-join User docs via entity_fk user_id (N1QL USE KEYS user:<id>).
+    # Soft-fail: reviews still render with generic author if users missing.
+    users_by_id: dict[str, dict[str, Any]] = {}
+    user_keys = _user_lookup_keys(
+        [_str_field(r.get("user_id")) for r in rows if isinstance(r, dict)]
+    )
+    if user_keys and cb is not None:
+        try:
+            user_rows = await n1ql_hydrate_keys(
+                cb,
+                bucket,
+                scope,
+                collection,
+                user_keys[:lim],
+                fields=_USER_N1QL_FIELDS,
+            )
+            users_by_id = _index_users_by_id(user_rows)
+            if users_by_id:
+                sources.append("n1ql_user_hydrate")
+                if "+users" not in source:
+                    source = f"{source}+users"
+        except Exception as e:
+            logger.warning("fetch_business_reviews user n1ql hydrate failed: %s", e)
+    if user_keys and not users_by_id and cb is None:
+        # Pure-Zeus fallback: find each unique User (capped) then project.
+        # Prefer N1QL when available — this path is slower and best-effort.
+        try:
+            found_user_node_ids: list[str] = []
+            for uk in user_keys[: min(10, lim)]:
+                bare_uid = normalize_yelp_user_id(uk)
+                if not bare_uid:
+                    continue
+                ufind = await run_verb_from_config(
+                    "find",
+                    {
+                        "entity_type": "User",
+                        "where": {"user_id": bare_uid},
+                        "limit": 1,
+                    },
+                    cfg,
+                    mode_header="analytics",
+                )
+                if not ufind.ok:
+                    continue
+                u_nids, _ = _find_result_keys(ufind.body)
+                found_user_node_ids.extend(u_nids[:1])
+            if found_user_node_ids:
+                uproj = await run_verb_from_config(
+                    "project",
+                    {
+                        "ids": found_user_node_ids[:lim],
+                        "fields": list(_USER_PROJECT_FIELDS),
+                    },
+                    cfg,
+                    mode_header="analytics",
+                )
+                if uproj.ok:
+                    users_by_id = _index_users_by_id(_project_rows(uproj.body))
+                    if users_by_id:
+                        sources.append("zeus_user_find_project")
+                        if "+users" not in source:
+                            source = f"{source}+users"
+        except Exception as e:
+            logger.warning("fetch_business_reviews user find/project failed: %s", e)
+
     reviews: list[dict[str, str]] = []
     for row in rows:
-        mapped = _review_row_to_ui(row)
+        if not isinstance(row, dict):
+            continue
+        uid = normalize_yelp_user_id(_str_field(row.get("user_id")))
+        mapped = _review_row_to_ui(row, user=users_by_id.get(uid))
         # Keep rows even without text if stars present (sparse graph project).
         if not mapped.get("text") and not mapped.get("stars"):
             continue

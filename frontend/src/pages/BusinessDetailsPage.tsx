@@ -477,7 +477,7 @@ export default function BusinessDetailsPage() {
 
               <div className="space-y-8">
                 {visibleReviews.map((r, i) => (
-                  <ReviewRow key={`${r.author}-${i}`} review={r} />
+                  <ReviewRow key={r.review_id || r.user_id || `${r.author}-${i}`} review={r} />
                 ))}
               </div>
 
@@ -674,11 +674,19 @@ function BestForPanel({ items }: { items: string[] }) {
 function ReviewRow({
   review,
 }: {
-  review: { author: string; stars: string; text: string; date: string };
+  review: {
+    author: string;
+    stars: string;
+    text: string;
+    date: string;
+    user_review_count?: string;
+    yelping_since?: string;
+  };
 }) {
   const initials = initialsFrom(review.author);
   const stars = parseStars(review.stars);
-  const meta = [review.date].filter(Boolean).join(" · ");
+  const reviewCountLabel = formatUserReviewCount(review.user_review_count);
+  const meta = [reviewCountLabel, review.date].filter(Boolean).join(" · ");
 
   return (
     <div className="border-b border-outline-variant/30 pb-8 last:border-0">
@@ -697,6 +705,14 @@ function ReviewRow({
       <p className="leading-relaxed text-on-surface">{review.text}</p>
     </div>
   );
+}
+
+function formatUserReviewCount(raw?: string): string {
+  if (!raw) return "";
+  const n = Number(String(raw).replace(/[^\d.]/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const rounded = Math.round(n);
+  return `${rounded.toLocaleString()} review${rounded === 1 ? "" : "s"}`;
 }
 
 function StarRow({ value }: { value: number }) {

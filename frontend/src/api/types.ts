@@ -76,6 +76,12 @@ export type ReviewItem = {
   text: string;
   date: string;
   review_id?: string;
+  /** Bare Yelp user id (no user: prefix). */
+  user_id?: string;
+  /** User.review_count from joined User doc. */
+  user_review_count?: string;
+  user_average_stars?: string;
+  yelping_since?: string;
 };
 
 export type ReviewsResponse = {
