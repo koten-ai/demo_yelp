@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import BusinessCard from "../components/results/BusinessCard";
-import { ErrorBanner, LoadingBlock } from "../components/common/States";
+import { ErrorBanner } from "../components/common/States";
 import { isAbortError, search } from "../api/client";
-import { useSearchLoadingLabel } from "../lib/useCorpus";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { renderSimpleMarkdown } from "../lib/simpleMarkdown";
 import { appendTrace } from "../lib/trace";
@@ -36,7 +35,6 @@ export default function ConversationalSearchPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const loadingLabel = useSearchLoadingLabel("Querying");
   const abortRef = useRef<AbortController | null>(null);
   /** Bumped to ignore stale completions after New Search / superseded sends. */
   const requestGenRef = useRef(0);
@@ -198,18 +196,12 @@ export default function ConversationalSearchPage() {
           )
         )}
         {loading && (
-          <div className="flex flex-col items-center gap-3">
-            <LoadingBlock label={loadingLabel} />
-            <button
-              type="button"
-              onClick={stopSearch}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-outline-variant bg-surface-container-lowest px-4 py-2 text-sm font-medium text-on-surface hover:bg-surface-container-low"
-            >
-              <span className="material-symbols-outlined text-base" aria-hidden>
-                stop
-              </span>
-              Stop
-            </button>
+          <div className="w-full" role="status" aria-live="polite" aria-label="Thinking with Zeus">
+            <div className="w-full max-w-full rounded-2xl border border-outline-variant/40 bg-surface-container-lowest px-4 py-3">
+              <p className="text-sm text-on-surface-variant">
+                <span className="thinking-dots">Thinking with Zeus</span>
+              </p>
+            </div>
           </div>
         )}
       </div>
