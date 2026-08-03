@@ -10,6 +10,7 @@ data/chat_requests/**
 !data/chat_requests/.gitkeep
 frontend/node_modules/
 frontend/dist/
+frontend/public/business-images/
 *.egg-info/
 dist/
 build/

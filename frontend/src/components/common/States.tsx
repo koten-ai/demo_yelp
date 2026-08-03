@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 type Props = { message: string; onDismiss?: () => void };
 
 export function ErrorBanner({ message, onDismiss }: Props) {
@@ -20,12 +22,22 @@ export function ErrorBanner({ message, onDismiss }: Props) {
   );
 }
 
-export function EmptyState({ title, body }: { title: string; body?: string }) {
+export function EmptyState({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body?: string;
+  /** Optional CTA under the body (e.g. Ask AI failover). */
+  action?: ReactNode;
+}) {
   return (
     <div className="text-center py-16 px-6">
       <span className="material-symbols-outlined text-4xl text-primary/40">search_off</span>
       <h3 className="mt-3 font-semibold text-on-surface">{title}</h3>
       {body && <p className="mt-1 text-sm text-on-surface-variant">{body}</p>}
+      {action && <div className="mt-5 flex justify-center">{action}</div>}
     </div>
   );
 }

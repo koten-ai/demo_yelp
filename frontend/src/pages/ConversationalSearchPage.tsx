@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import BusinessCard from "../components/results/BusinessCard";
 import { ErrorBanner, LoadingBlock } from "../components/common/States";
 import { isAbortError, search } from "../api/client";
@@ -16,13 +16,23 @@ type Turn = {
   results?: Card[];
 };
 
+type ChatLocState = {
+  /** Prefill composer (business detail “Ask AI about this place”). */
+  seedQuery?: string;
+  /** When true with seedQuery, send immediately (empty Explore failover). */
+  autoSend?: boolean;
+  fromBusinessId?: string;
+};
+
 const CANCELLED_MESSAGE = "You stopped this search.";
 
 export default function ConversationalSearchPage() {
   const loc = useLocation();
-  const seedQuery =
-    (loc.state as { seedQuery?: string } | null)?.seedQuery?.trim() || "";
-  const [input, setInput] = useState(seedQuery);
+  const nav = useNavigate();
+  const locState = (loc.state as ChatLocState | null) || null;
+  const seedQuery = locState?.seedQuery?.trim() || "";
+  const autoSend = Boolean(locState?.autoSend && seedQuery);
+  const [input, setInput] = useState(autoSend ? "" : seedQuery);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -32,22 +42,17 @@ export default function ConversationalSearchPage() {
   const requestGenRef = useRef(0);
   const seedAppliedRef = useRef(false);
 
-  // Prefill from business-detail "Ask AI about this place".
-  useEffect(() => {
-    if (!seedQuery || seedAppliedRef.current) return;
-    seedAppliedRef.current = true;
-    setInput(seedQuery);
-  }, [seedQuery]);
+  const sendQuery = useCallback(async (raw: string) => {
+    const q = raw.trim();
+    if (!q) return;
+    // Avoid overlapping sends (auto-send + manual, or double effect).
+    if (abortRef.current) return;
 
-  async function send() {
-    const q = input.trim();
-    if (!q || loading) return;
     setInput("");
     setTurns((t) => [...t, { role: "user", text: q }]);
     setLoading(true);
     setError("");
 
-    abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const gen = ++requestGenRef.current;
@@ -84,6 +89,26 @@ export default function ConversationalSearchPage() {
         setLoading(false);
       }
     }
+  }, []);
+
+  // Prefill from business-detail, or auto-send from empty Explore failover.
+  useEffect(() => {
+    if (!seedQuery || seedAppliedRef.current) return;
+    seedAppliedRef.current = true;
+
+    if (autoSend) {
+      // Drop autoSend from history so back/remount does not re-fire.
+      nav("/chat", { replace: true, state: { seedQuery, autoSend: false } });
+      void sendQuery(seedQuery);
+      return;
+    }
+
+    setInput(seedQuery);
+  }, [seedQuery, autoSend, nav, sendQuery]);
+
+  async function send() {
+    if (loading) return;
+    await sendQuery(input);
   }
 
   function stopSearch() {
@@ -126,7 +151,7 @@ export default function ConversationalSearchPage() {
       )}
 
       <div className="flex-1 space-y-6 overflow-y-auto pb-4">
-        {turns.length === 0 && (
+        {turns.length === 0 && !loading && (
           <div className="glass rounded-2xl p-6 text-on-surface-variant text-sm">
             Try: “quiet coffee shops open now” then “which are good for laptop work?”
           </div>
