@@ -17,30 +17,49 @@ const TRACE_SCRIPT_SRC = `/static/zeus_client_chat_trace.js?v=${encodeURICompone
 )}`;
 
 const DEFAULT_HUB_BASE_URL =
-  (import.meta.env.VITE_HUB_BASE_URL as string | undefined) || "http://zeus-dev.local:9091";
+  (import.meta.env.VITE_HUB_BASE_URL as string | undefined) ||
+  // Public demo front: Hub is path-routed at /zeus/. Local dev can still override via env.
+  (typeof window !== "undefined" ? `${window.location.origin}/zeus` : "http://zeus-dev.local:9091");
+
+/**
+ * Widget (zeus_client_chat_trace.js) defaults zeusApiUrl to http://localhost:8080.
+ * On a remote demo that produces CORS noise and failed /api/tool-order fetches.
+ * Point it at same-origin so tool-order hits LocalAI nginx → /api/tool-order.
+ */
+function defaultZeusApiUrl(): string {
+  const fromEnv = import.meta.env.VITE_ZEUS_API_URL as string | undefined;
+  if (fromEnv && fromEnv.trim()) return fromEnv.replace(/\/$/, "");
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return window.location.origin;
+  }
+  return "";
+}
+
+function applyTraceConfig(partial: Record<string, unknown>) {
+  window.ZeusTraceConfig = {
+    ...(window.ZeusTraceConfig || {}),
+    zeusApiUrl:
+      (window.ZeusTraceConfig as { zeusApiUrl?: string })?.zeusApiUrl || defaultZeusApiUrl(),
+    hubBaseUrl:
+      (window.ZeusTraceConfig as { hubBaseUrl?: string })?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
+    ...partial,
+  };
+}
 
 export function ensureTraceScript() {
   if (typeof window === "undefined") return;
   if (!window.ZeusTraceConfig) window.ZeusTraceConfig = {};
 
-  // Hub base must be present before first appendTraceCard (not only after tool-order).
-  window.ZeusTraceConfig = {
-    ...(window.ZeusTraceConfig || {}),
-    hubBaseUrl:
-      (window.ZeusTraceConfig as { hubBaseUrl?: string }).hubBaseUrl || DEFAULT_HUB_BASE_URL,
-  };
+  // Set same-origin Zeus API + Hub base *before* the widget script runs (avoids
+  // localhost:8080 default and race with async tool-order).
+  applyTraceConfig({});
 
   if (!toolOrderInjected) {
     toolOrderInjected = true;
     // Background; never gate UI
     fetchToolOrder()
       .then((order) => {
-        window.ZeusTraceConfig = {
-          ...(window.ZeusTraceConfig || {}),
-          toolOrder: order,
-          hubBaseUrl:
-            (window.ZeusTraceConfig as { hubBaseUrl?: string })?.hubBaseUrl || DEFAULT_HUB_BASE_URL,
-        };
+        applyTraceConfig({ toolOrder: order });
       })
       .catch(() => {
         /* ignore */

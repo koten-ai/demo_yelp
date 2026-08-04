@@ -107,7 +107,7 @@ Same-origin via nginx means the browser talks only to the frontend origin; CORS 
 |---------|-------------|
 | `zeus.url` | Zeus base URL (`ZEUS_URL` overrides) |
 | `zeus.scope_credentials["yelp-demo/_default"]` | Basic auth for the sample scope |
-| `default_mode` | Agent mode (`open` default) |
+| `default_mode` | Agent mode (`analytics` product default; deploy uses analytics + `default_base_id=base-6.1`) |
 | `default_sample` | `yelp-demo` |
 | `llm_provider.api_key` | Required |
 
