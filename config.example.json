@@ -16,11 +16,11 @@
       "yelp-demo/_default": {
         "auto": {
           "contract_id": "auto_v4",
-          "contract_hash": ""
+          "contract_hash": "md5:98bd0e732075dda525e834830a7f70be"
         },
         "analytics": {
           "contract_id": "analytics_v4",
-          "contract_hash": ""
+          "contract_hash": "md5:af6975ab95a04f22d83ac0a0a01ab4b6"
         }
       }
     },
@@ -32,10 +32,7 @@
     "base_url": "https://api.x.ai/v1",
     "api_key": "",
     "models": [
-      "grok-4-1-fast-non-reasoning",
-      "grok-4-1-fast-reasoning",
-      "grok-4",
-      "grok-3-mini"
+      "grok-4.5-latest"
     ]
   },
 
@@ -46,7 +43,7 @@
   },
 
   "default_api_version": "v2",
-  "default_mode": "auto",
+  "default_mode": "analytics",
   "default_sample": "yelp-demo",
   "samples": {
     "yelp-demo": {
