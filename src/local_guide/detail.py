@@ -128,15 +128,110 @@ def find_cached_business(business_id: str) -> dict[str, str] | None:
 
 
 def _bullets(block: str) -> list[str]:
-    items = [m.group(1).strip() for m in _BULLET.finditer(block or "")]
+    raw = block or ""
+    # ai_process JSON often embeds literal "\n-" sequences inside a string value.
+    if "\\n" in raw and "\n" not in raw.replace("\\n", ""):
+        raw = raw.replace("\\n", "\n").replace("\\t", "\t")
+    elif "\\n-" in raw or "\\n*" in raw:
+        raw = raw.replace("\\n", "\n").replace("\\t", "\t")
+    items = [m.group(1).strip() for m in _BULLET.finditer(raw)]
     if items:
-        return items[:8]
-    parts = re.split(r"[;\n]+", block or "")
-    return [p.strip(" -*\t") for p in parts if len(p.strip()) > 3][:8]
+        cleaned: list[str] = []
+        for it in items[:8]:
+            # Drop JSON/control debris that leaks past section boundaries.
+            if it.startswith('"') and ":" in it[:24]:
+                continue
+            if it in {"{", "}", "[", "]"}:
+                continue
+            cleaned.append(it.strip().strip('"').rstrip(","))
+        return [c for c in cleaned if len(c) > 2][:8]
+    parts = re.split(r"[;\n]+", raw)
+    return [p.strip(" -*\t\"'") for p in parts if len(p.strip()) > 3][:8]
+
+
+def _unwrap_insight_text(answer: str | None) -> str:
+    """Normalize agent answer: strip fences, prefer JSON.summary prose when present."""
+    text = answer if isinstance(answer, str) else str(answer or "")
+    text = text.strip()
+    if not text:
+        return ""
+
+    fence = re.match(r"^```(?:json|markdown|md)?\s*\n([\s\S]*?)\n```\s*$", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+    elif text.startswith("```"):
+        # Truncated / multi-fence: drop opening line fence only.
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    if text.startswith("{") and ("summary" in text or "the_good" in text):
+        try:
+            import json
+
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                # Prefer explicit section arrays when the model returns structured JSON.
+                if any(
+                    isinstance(obj.get(k), list)
+                    for k in ("the_good", "the_bad", "best_for", "good", "bad", "best_for")
+                ):
+                    parts: list[str] = []
+                    if obj.get("summary"):
+                        parts.append(str(obj["summary"]))
+                    for title, keys in (
+                        ("The Good", ("the_good", "good", "pros")),
+                        ("The Bad", ("the_bad", "bad", "cons")),
+                        ("Best For", ("best_for", "bestFor")),
+                    ):
+                        items: list[str] = []
+                        for k in keys:
+                            v = obj.get(k)
+                            if isinstance(v, list):
+                                items = [str(x).strip() for x in v if str(x).strip()]
+                                break
+                            if isinstance(v, str) and v.strip():
+                                items = [v.strip()]
+                                break
+                        if items:
+                            parts.append(f"**{title}**")
+                            parts.extend(f"- {it}" for it in items)
+                    return "\n".join(parts).strip()
+                summary = obj.get("summary") or obj.get("answer") or obj.get("content")
+                if isinstance(summary, str) and summary.strip():
+                    return summary.strip()
+        except Exception:
+            # Fall through to regex on raw / partially unescaped text.
+            pass
+
+    # If still looks like a JSON blob with an escaped summary string, peel it out.
+    m = re.search(
+        r'"summary"\s*:\s*"((?:\\.|[^"\\])*)"',
+        text,
+        re.DOTALL,
+    )
+    if m:
+        try:
+            import json as _json
+
+            return _json.loads(f'"{m.group(1)}"')
+        except Exception:
+            unescaped = (
+                m.group(1)
+                .replace("\\n", "\n")
+                .replace("\\t", "\t")
+                .replace('\\"', '"')
+                .replace("\\\\", "\\")
+            )
+            return unescaped
+    return text
 
 
 def parse_insight_answer(answer: str | None) -> dict[str, Any]:
-    text = answer if isinstance(answer, str) else str(answer or "")
+    text = _unwrap_insight_text(answer)
     good: list[str] = []
     bad: list[str] = []
     best: list[str] = []
@@ -805,31 +900,87 @@ async def get_business(business_id: str, chat_id: str | None = None) -> dict:
     }
 
 
+def _format_reviews_for_insight_prompt(
+    reviews: list[dict[str, str]],
+    *,
+    max_reviews: int = 12,
+    max_chars_each: int = 420,
+) -> str:
+    """Compact grounded review excerpts for the insight LLM (graph project omits text)."""
+    lines: list[str] = []
+    for i, rev in enumerate(reviews[:max_reviews], 1):
+        if not isinstance(rev, dict):
+            continue
+        stars = str(rev.get("stars") or "").strip() or "?"
+        author = str(rev.get("author") or "Reviewer").strip() or "Reviewer"
+        date = str(rev.get("date") or "").strip()
+        text = str(rev.get("text") or "").strip().replace("\n", " ")
+        if len(text) > max_chars_each:
+            text = text[: max_chars_each - 1].rstrip() + "…"
+        if not text and stars == "?":
+            continue
+        head = f"{i}. ({stars}★) {author}"
+        if date:
+            head = f"{head} — {date}"
+        lines.append(f"{head}: {text}" if text else f"{head}: (no body text)")
+    return "\n".join(lines)
+
+
 async def run_business_insight(business_id: str, chat_id: str | None = None) -> dict:
     """Agent turn summarizing reviews into good/bad/best-for.
 
     Isolated from discovery ``chat_id`` / Zeus session (``chat_id`` arg ignored).
     Individual review rows come from :func:`fetch_business_reviews` (direct V2
-    ``find``), not from the agent ``zeus_data`` path.
+    ``find`` + N1QL), not from the agent ``zeus_data`` path.
+
+    Graph ``project`` on Review nodes typically returns stars/ids but **not** full
+    ``text``. We therefore hydrate reviews via the verb path first, ground the
+    prompt with those excerpts, and run the agent with ``ai_process_result=True``
+    so the cheap terminal envelope is not used (that path only returns the
+    pipeline stub summary — empty Good/Bad/Best For panels).
     """
     _ = chat_id
 
     cached = find_cached_business(business_id)
     label = (cached or {}).get("name") or business_id
     bare = normalize_yelp_business_id(business_id)
-    q = (
-        f"For business '{label}' (id={bare or business_id}), retrieve related reviews when available "
-        "and write an AI review summary with sections **The Good**, **The Bad**, and **Best For** "
-        "as bullet lists grounded only in Zeus data. Do not invent reviews."
+
+    # Verb path first: full review bodies (N1QL) for the SPA list + prompt grounding.
+    reviews_payload = await fetch_business_reviews(bare or business_id)
+    reviews = list(reviews_payload.get("reviews") or [])
+    excerpts = _format_reviews_for_insight_prompt(reviews)
+
+    if excerpts:
+        q = (
+            f"For business '{label}' (id={bare or business_id}), write an AI review summary "
+            "with sections **The Good**, **The Bad**, and **Best For** as markdown bullet lists. "
+            "Ground every bullet ONLY in the real customer reviews below (already retrieved "
+            "from Zeus). Do not invent reviews or facts. Prefer themes that appear more than "
+            "once. If evidence is thin, keep bullets short and hedged.\n\n"
+            "Output format (critical): plain markdown only — the three **Section** headers "
+            "and `-` bullets. Do NOT wrap the answer in JSON or code fences.\n\n"
+            f"Customer reviews:\n{excerpts}"
+        )
+    else:
+        q = (
+            f"For business '{label}' (id={bare or business_id}), no individual review bodies "
+            "were available from the direct Review find. Try one pipeline to retrieve Review "
+            "rows for this bare business_id, then write **The Good**, **The Bad**, and "
+            "**Best For** as markdown bullet lists grounded only in Zeus data. Do not invent "
+            "reviews. If still empty, say so briefly under each section. "
+            "Plain markdown only — no JSON wrapper."
+        )
+
+    # Insight needs the Hub-style second LLM pass (Ask AI plane), not cheap search.
+    result = await run_search(
+        q,
+        _isolated_detail_chat_id(),
+        ai_process_result=True,
     )
-    result = await run_search(q, _isolated_detail_chat_id())
     if result.get("error"):
         return result
 
     parsed = parse_insight_answer(result.get("answer"))
-    # Prefer direct verb fetch for the review list (0.3.0+ run_verb/find).
-    reviews_payload = await fetch_business_reviews(bare or business_id)
-    reviews = list(reviews_payload.get("reviews") or [])
     if not reviews:
         reviews = _reviews_from_structured(result.get("structured_response"))
     business = cached
@@ -862,4 +1013,5 @@ async def run_business_insight(business_id: str, chat_id: str | None = None) -> 
         "tool_order": result.get("tool_order"),
         "session_id": result.get("session_id"),
         "session_round": result.get("session_round"),
+        "ai_process_result": True,
     }

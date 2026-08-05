@@ -238,7 +238,6 @@ export default function ConversationalSearchPage() {
             <span className="material-symbols-outlined text-base" aria-hidden>
               stop
             </span>
-            Stop
           </button>
         ) : (
           <button

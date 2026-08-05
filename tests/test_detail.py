@@ -40,6 +40,32 @@ Summary of reviews.
     assert any("work" in x.lower() or "Solo" in x for x in parsed["best_for"])
 
 
+def test_parse_insight_json_fence_with_summary_markdown():
+    answer = '''```json
+{
+  "summary": "Intro line.\\n\\n**The Good**\\n- Fresh sushi\\n- Friendly service\\n\\n**The Bad**\\n- Pricey\\n\\n**Best For**\\n- Date night",
+  "confidence": "high"
+}
+```'''
+    parsed = parse_insight_answer(answer)
+    assert any("sushi" in x.lower() for x in parsed["the_good"])
+    assert any("riendly" in x.lower() or "service" in x.lower() for x in parsed["the_good"])
+    assert any("ricey" in x.lower() or "Pricey" in x for x in parsed["the_bad"])
+    assert any("date" in x.lower() for x in parsed["best_for"])
+
+
+def test_parse_insight_truncated_json_peels_summary():
+    # Live ai_process sometimes returns a fenced JSON object cut mid-stream.
+    answer = (
+        '```json\n{\n  "summary": "Hi.\\n\\n**The Good**\\n- Great rolls\\n\\n'
+        '**The Bad**\\n- Slow service\\n\\n**Best For**\\n- Lunch",\n  "confidence": "hi'
+    )
+    parsed = parse_insight_answer(answer)
+    assert any("rolls" in x.lower() for x in parsed["the_good"])
+    assert any("slow" in x.lower() for x in parsed["the_bad"])
+    assert any("unch" in x.lower() for x in parsed["best_for"])
+
+
 def test_isolated_detail_chat_id_prefix():
     a = _isolated_detail_chat_id()
     b = _isolated_detail_chat_id()
@@ -188,6 +214,8 @@ async def test_insight_ignores_discovery_chat_id(monkeypatch):
 
     async def fake_search(query, chat_id=None, *, ai_process_result=False):
         captured["chat_id"] = chat_id
+        captured["ai_process_result"] = ai_process_result
+        captured["query"] = query
         return {
             "chat_id": chat_id,
             "answer": "**The Good**\n- Great food\n\n**The Bad**\n- Busy\n\n**Best For**\n- Lunch",
@@ -224,10 +252,29 @@ async def test_insight_ignores_discovery_chat_id(monkeypatch):
     out = await run_business_insight("biz:x", chat_id="yelp_from_landing")
     assert captured["chat_id"] != "yelp_from_landing"
     assert str(captured["chat_id"]).startswith("detail_")
+    # Insight must use Ask AI plane (second LLM pass), not cheap search envelope.
+    assert captured["ai_process_result"] is True
+    assert "Loved it" in captured["query"]
+    assert "The Good" in captured["query"] or "**The Good**" in captured["query"]
     assert "Great food" in out["the_good"]
     assert out["session_id"] == "sess_insight"
     assert out["reviews"][0]["text"] == "Loved it"
     assert out["reviews_source"] == "zeus_find+n1ql"
+    assert out["ai_process_result"] is True
+
+
+def test_format_reviews_for_insight_prompt_truncates():
+    from local_guide.detail import _format_reviews_for_insight_prompt
+
+    long = "x" * 800
+    text = _format_reviews_for_insight_prompt(
+        [{"author": "A", "stars": "5", "text": long, "date": "2020-01-01"}],
+        max_chars_each=50,
+    )
+    assert "5★" in text
+    assert "A" in text
+    assert "…" in text
+    assert len(text) < 200
 
 
 @pytest.mark.asyncio

@@ -66,3 +66,20 @@ def test_answer_is_empty_markers():
     assert _answer_is_empty("")
     assert _answer_is_empty(None)
     assert not _answer_is_empty("Found 3 places")
+
+
+def test_user_facing_answer_peels_layer_a_dump():
+    from zeus_client import peel_layer_a_summary, user_facing_answer
+
+    dump = (
+        "```\n"
+        'summary: "Top salon picks in Tampa."\n'
+        "confidence: med\n"
+        'query_decomposition: {"intent": "salons"}\n'
+        'decomposition: {"targets": []}\n'
+        "policy_action: answer\n"
+        "wish_i_knew: []\n"
+        "```"
+    )
+    assert peel_layer_a_summary(dump) == "Top salon picks in Tampa."
+    assert user_facing_answer(dump) == "Top salon picks in Tampa."

@@ -13,7 +13,7 @@ let toolOrderInjected = false;
 
 /** Cache-bust vendored widget so rebuilds replace browser cache. */
 const TRACE_SCRIPT_SRC = `/static/zeus_client_chat_trace.js?v=${encodeURIComponent(
-  import.meta.env.VITE_TRACE_WIDGET_VERSION || import.meta.env.VITE_APP_VERSION || "0.1.2"
+  import.meta.env.VITE_TRACE_WIDGET_VERSION || import.meta.env.VITE_APP_VERSION || "0.1.5"
 )}`;
 
 const DEFAULT_HUB_BASE_URL =

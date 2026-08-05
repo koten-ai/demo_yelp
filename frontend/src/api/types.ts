@@ -1,6 +1,9 @@
-/** GET /api/health — includes installed kotenai-zeus-client version for chrome. */
+/** GET /api/health — app + Zeus client versions for chrome (labeled distinctly). */
 export type HealthResponse = {
   ok: boolean;
+  /** demo_yelp / local-guide package version (not the Zeus client). */
+  app_version?: string;
+  /** Installed kotenai-zeus-client / zeus_client_python package version. */
   zeus_client_version: string;
   /** Live or configured corpus size for search-loader copy. */
   business_count?: number | null;

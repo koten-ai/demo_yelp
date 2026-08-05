@@ -9,8 +9,21 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "text-primary" : "text-on-surface-variant hover:text-primary"
   }`;
 
+function chromeVersionLabel(
+  appVersion: string | null,
+  zeusClientVersion: string | null,
+): string {
+  // Labels must stay distinct: app = demo_yelp/local-guide; client = kotenai-zeus-client.
+  const parts: string[] = [];
+  if (appVersion) parts.push(`LocalAI v${appVersion}`);
+  if (zeusClientVersion) parts.push(`Zeus client v${zeusClientVersion}`);
+  if (parts.length) return parts.join(" · ");
+  return "Powered by Zeus";
+}
+
 export default function AppShell() {
-  // Installed kotenai-zeus-client (zeus_client_python) — not the SPA package version.
+  // App = local-guide/demo_yelp; Zeus client = kotenai-zeus-client (not SPA package.json).
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [zeusClientVersion, setZeusClientVersion] = useState<string | null>(null);
 
   useEffect(() => {
@@ -19,6 +32,9 @@ export default function AppShell() {
     fetchHealth()
       .then((h) => {
         if (cancelled) return;
+        if (h?.app_version) {
+          setAppVersion(h.app_version);
+        }
         if (h?.zeus_client_version) {
           setZeusClientVersion(h.zeus_client_version);
         }
@@ -59,10 +75,11 @@ export default function AppShell() {
               Ask AI
             </NavLink>
           </nav>
-          <div className="text-xs text-on-surface-variant font-mono hidden sm:block">
-            {zeusClientVersion
-              ? `Powered by Zeus · v${zeusClientVersion}`
-              : "Powered by Zeus"}
+          <div
+            className="text-xs text-on-surface-variant font-mono hidden sm:block text-right"
+            title="LocalAI = this demo app · Zeus client = kotenai-zeus-client"
+          >
+            {chromeVersionLabel(appVersion, zeusClientVersion)}
           </div>
         </div>
       </header>

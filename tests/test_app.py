@@ -4,12 +4,23 @@ import pytest
 def test_health(client):
     from importlib.metadata import version as pkg_version
 
+    from local_guide import __version__ as app_pkg_version
+
     res = client.get("/api/health")
     assert res.status_code == 200
     data = res.json()
     assert data["ok"] is True
-    # Header chrome reads this — must match installed kotenai-zeus-client.
+    # Header chrome: app (local-guide) and Zeus client are separate fields/labels.
+    try:
+        expected_app = pkg_version("local-guide")
+    except Exception:
+        expected_app = app_pkg_version
+    assert data["app_version"] == expected_app
     assert data["zeus_client_version"] == pkg_version("kotenai-zeus-client")
+    # Distinct fields so UI can label them separately (values may match by chance).
+    assert "app_version" in data and "zeus_client_version" in data
+    assert isinstance(data["app_version"], str) and data["app_version"]
+    assert isinstance(data["zeus_client_version"], str) and data["zeus_client_version"]
 
 
 def test_search_rejects_empty_query(client):

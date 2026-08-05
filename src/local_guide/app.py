@@ -59,8 +59,27 @@ def zeus_client_version() -> str:
         return "unknown"
 
 
+def app_version() -> str:
+    """This demo app (local-guide / demo_yelp) package version — not the Zeus client."""
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            return version("local-guide")
+        except PackageNotFoundError:
+            pass
+    except Exception:
+        pass
+    try:
+        from local_guide import __version__ as pkg_ver
+
+        return str(pkg_ver or "unknown")
+    except Exception:
+        return "unknown"
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="LocalAI", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="LocalAI", version=app_version(), lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -93,6 +112,8 @@ def create_app() -> FastAPI:
         corpus = await resolve_search_corpus()
         return {
             "ok": True,
+            # demo_yelp / local-guide app pin (distinct from Zeus client).
+            "app_version": app_version(),
             # Running zeus_client_python / kotenai-zeus-client — UI chrome source of truth.
             "zeus_client_version": zeus_client_version(),
             # Search loader: "Searching {business_count} {corpus_label}…"

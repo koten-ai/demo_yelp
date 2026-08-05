@@ -24,6 +24,12 @@ from local_guide.chat_store import CHATS, chat_lock, persist_chat
 from local_guide.output_schema import DEMO_OUTPUT_SCHEMA
 from local_guide.results_parser import extract_businesses, zeus_data_to_results
 
+try:
+    from zeus_client import user_facing_answer as _user_facing_answer
+except ImportError:  # pragma: no cover - older client pins
+    def _user_facing_answer(answer, *, ui_text=None, layer_summary=None):  # type: ignore[misc]
+        return answer if isinstance(answer, str) else ("" if answer is None else str(answer))
+
 LOCAL_PROMPT_PREFIX = (
     "Find local businesses that match these preferences in the yelp-demo knowledge graph. "
     "Use Zeus V2 search, find, get, or pipeline as needed on real data "
@@ -192,7 +198,7 @@ async def _search_async(
     scope = triple.get("scope", "_default")
     collection = triple.get("collection", "_default")
 
-    message = LOCAL_PROMPT_PREFIX + query.strip()
+    message = query.strip()
     chat_id = chat_id or ("yelp_" + uuid.uuid4().hex[:12])
 
     lock = await chat_lock(chat_id)
@@ -312,6 +318,27 @@ async def _search_async(
         results = zeus_data_to_results(structured.zeus_data)
         if not results:
             results = extract_businesses(trace)
+
+        # Ask AI / ai_process insight sometimes returns a fenced Layer A dump
+        # (summary + policy_action + wish_i_knew …). Prefer ui_text / peeled summary.
+        layer = getattr(structured, "layer_a", None) or {}
+        layer_summary = layer.get("summary") if isinstance(layer, dict) else None
+        cleaned = _user_facing_answer(
+            answer if isinstance(answer, str) else str(answer or ""),
+            ui_text=getattr(structured, "ui_text", None),
+            layer_summary=layer_summary if isinstance(layer_summary, str) else None,
+        )
+        if cleaned and cleaned != (answer or ""):
+            answer = cleaned
+            try:
+                structured.answer = answer  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if isinstance(trace, dict):
+                notes = list(trace.get("notes") or [])
+                notes.append("[WARN] peeled Layer A envelope from Ask AI answer")
+                trace["notes"] = notes
+
         structured_answer = parse_markdown_answer(answer)
         if not results and structured_answer:
             results = structured_answer_to_results(structured_answer)

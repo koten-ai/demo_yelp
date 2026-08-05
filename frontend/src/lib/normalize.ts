@@ -92,9 +92,22 @@ export function summaryFromResponse(answer: unknown, structured: unknown): strin
   if (typeof answer === "string") {
     const t = answer.trim();
     if (!t || t === "(model returned no content)") return "";
+    const peeled = peelLayerASummary(t);
+    if (peeled) return peeled;
     return answer;
   }
   if (answer && typeof answer === "object") {
+    const obj = answer as Record<string, unknown>;
+    if (typeof obj.summary === "string" && obj.summary.trim()) {
+      // Object-shaped Layer A / pipeline envelope — never JSON.stringify whole bag.
+      if (
+        "policy_action" in obj ||
+        "query_decomposition" in obj ||
+        "jail_break_attempt" in obj
+      ) {
+        return obj.summary.trim();
+      }
+    }
     try {
       return JSON.stringify(answer);
     } catch {
@@ -102,4 +115,67 @@ export function summaryFromResponse(answer: unknown, structured: unknown): strin
     }
   }
   return "";
+}
+
+/** Detect/peel Layer A terminate dumps the model sometimes echoes into the answer. */
+function peelLayerASummary(text: string): string | null {
+  let body = text.trim();
+  const fence = body.match(/^```(?:json|yaml|yml|markdown|md)?\s*\n([\s\S]*?)\n```\s*$/i);
+  if (fence) body = fence[1].trim();
+  else if (body.startsWith("```")) {
+    const lines = body.split("\n");
+    if (lines[0]?.startsWith("```")) lines.shift();
+    if (lines[lines.length - 1]?.trim() === "```") lines.pop();
+    body = lines.join("\n").trim();
+  }
+
+  const metaKeys = [
+    "confidence",
+    "query_decomposition",
+    "decomposition",
+    "policy_action",
+    "subject_confidence",
+    "jail_break_attempt",
+    "wish_i_knew",
+    "business_rules_triggers",
+  ];
+  const hasSummary = /^summary\s*:/m.test(body) || (body.startsWith("{") && body.includes('"summary"'));
+  if (!hasSummary) return null;
+  const metaHits = metaKeys.filter((k) =>
+    body.startsWith("{") ? body.includes(`"${k}"`) : new RegExp(`^${k}\\s*:`, "m").test(body),
+  ).length;
+  if (metaHits < 2) return null;
+
+  if (body.startsWith("{")) {
+    try {
+      const obj = JSON.parse(body) as Record<string, unknown>;
+      if (typeof obj.summary === "string" && obj.summary.trim()) return obj.summary.trim();
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // summary: "....escaped...."  (single physical line; \n inside quotes)
+  const quoted = body.match(/^summary\s*:\s*("(?:\\.|[^"\\])*")\s*$/m);
+  if (quoted) {
+    try {
+      const val = JSON.parse(quoted[1]) as string;
+      if (typeof val === "string" && val.trim()) return val.trim();
+    } catch {
+      const raw = quoted[1].slice(1, -1);
+      return raw
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\")
+        .trim();
+    }
+  }
+
+  const unquoted = body.match(/^summary\s*:\s*(.+?)\s*$/m);
+  if (unquoted) {
+    const val = unquoted[1].trim().replace(/^["']|["']$/g, "");
+    if (val && !val.startsWith("{")) return val.replace(/\\n/g, "\n").trim();
+  }
+  return null;
 }
