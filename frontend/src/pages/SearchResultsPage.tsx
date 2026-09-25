@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import SearchBar from "../components/search/SearchBar";
 import FilterChips, { filterBusinesses } from "../components/search/FilterChips";
 import BusinessCard from "../components/results/BusinessCard";
@@ -9,7 +9,6 @@ import { EmptyState, ErrorBanner, LoadingBlock } from "../components/common/Stat
 import { search } from "../api/client";
 import { useSearchLoadingLabel } from "../lib/useCorpus";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
-import { appendTrace } from "../lib/trace";
 import { clearSession, loadLastSearch, saveLastSearch } from "../state/session";
 import type { BusinessCard as Card } from "../api/types";
 
@@ -22,7 +21,6 @@ type LocState = {
 
 export default function SearchResultsPage() {
   const loc = useLocation();
-  const nav = useNavigate();
   const state = (loc.state || {}) as LocState;
   const cached = loadLastSearch();
   const loadingLabel = useSearchLoadingLabel("Searching");
@@ -56,19 +54,10 @@ export default function SearchResultsPage() {
 
   const filtered = filterBusinesses(ui, { openOnly, price, category });
   const hasQuery = Boolean(query.trim());
-  /** API returned nothing (not merely filter-hidden). Offer Ask AI insight path. */
   const noApiResults = !loading && hasQuery && results.length === 0;
   const filtersHideAll =
     !loading && !noApiResults && filtered.length === 0 && results.length > 0;
   const emptyBrowse = !loading && !hasQuery && results.length === 0;
-
-  function tryAskAi() {
-    const q = query.trim();
-    if (!q) return;
-    // Keep discovery chat_id from the empty Explore search so Ask AI can
-    // continue that turn with ai_process_result=true; only seed + auto-send.
-    nav("/chat", { state: { seedQuery: q, autoSend: true } });
-  }
 
   async function run() {
     const q = query.trim();
@@ -76,12 +65,8 @@ export default function SearchResultsPage() {
     setLoading(true);
     setError("");
     try {
-      // Each Explore submit is a new discovery intent (same as landing).
-      // Never reuse prior chat_id/zeus session — detail visits and older
-      // queries can leave tool history that bleeds into synthesis answers.
       clearSession();
-      const data = await search(q, null);
-      appendTrace(q, data);
+      const data = await search(q, null, { summarize: true });
       const ans = summaryFromResponse(data.answer, data.structured_answer);
       setAnswer(ans);
       setResults(data.results || []);
@@ -133,30 +118,15 @@ export default function SearchResultsPage() {
 
       <div className="mt-6 grid lg:grid-cols-12 gap-6">
         <div className="lg:col-span-7 space-y-4">
-          {noApiResults ? (
-            <EmptyState
-              title="No business found"
-              body="Quick search didn’t match a place. Ask AI can dig deeper with conversational insight."
-              action={
-                <button
-                  type="button"
-                  onClick={tryAskAi}
-                  className="inline-flex items-center gap-2 rounded-xl ai-gradient px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-95 focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2"
-                >
-                  <span className="material-symbols-outlined text-base" aria-hidden>
-                    auto_awesome
-                  </span>
-                  No business found. Try Ask AI?
-                </button>
-              }
-            />
-          ) : filtersHideAll || emptyBrowse ? (
+          {noApiResults || filtersHideAll || emptyBrowse ? (
             <EmptyState
               title="No businesses to show"
               body={
                 emptyBrowse
                   ? "Try a natural-language query above."
-                  : "Try a new natural-language query or clear filters."
+                  : noApiResults
+                    ? "No matching businesses for this query. Try different wording or Ask AI."
+                    : "Try a new natural-language query or clear filters."
               }
             />
           ) : (

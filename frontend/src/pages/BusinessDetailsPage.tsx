@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { ErrorBanner, LoadingBlock } from "../components/common/States";
 import PhotoCarouselModal from "../components/gallery/PhotoCarouselModal";
 import ResultsMap from "../components/map/ResultsMap";
 import { fetchBusiness, fetchInsight, fetchReviews } from "../api/client";
 import { normalizeBusiness } from "../lib/normalize";
-import { appendTrace } from "../lib/trace";
 import type {
   BusinessCard,
   InsightResponse,
   ReviewItem,
-  SearchResponse,
   UiBusiness,
 } from "../api/types";
 
@@ -19,7 +17,6 @@ const REVIEWS_PAGE = 3;
 export default function BusinessDetailsPage() {
   const { id = "" } = useParams();
   const loc = useLocation();
-  const nav = useNavigate();
   const seeded = (loc.state as { business?: BusinessCard } | null)?.business;
 
   const [biz, setBiz] = useState<UiBusiness | null>(
@@ -48,12 +45,10 @@ export default function BusinessDetailsPage() {
     async function load() {
       if (!id) return;
 
-      // Business card (V2 find) + reviews (V2 find) in parallel — no agent.
       const businessP = (async () => {
         if (seeded) return;
         setLoading(true);
         try {
-          // Never pass discovery chat_id — detail uses direct find, not multi-turn.
           const data = await fetchBusiness(id);
           if (!cancelled && data.business) {
             setBiz(normalizeBusiness(data.business as BusinessCard));
@@ -83,23 +78,12 @@ export default function BusinessDetailsPage() {
 
       try {
         setInsightLoading(true);
-        // Isolated insight turn; do not write chat_id into localStorage discovery session.
         const ins = await fetchInsight(id);
         if (!cancelled) {
           setInsight(ins);
-          if (ins.trace && ins.answer) {
-            appendTrace(`insight:${id}`, {
-              query: `insight ${id}`,
-              answer: ins.answer,
-              trace: ins.trace,
-              // Ephemeral detail chat — not the SPA discovery multi-turn id.
-              chat_id: ins.chat_id || "",
-            } as SearchResponse);
-          }
           if (ins.business) {
             setBiz((prev) => prev || normalizeBusiness(ins.business as BusinessCard));
           }
-          // Fallback if dedicated reviews call was empty but insight verb path filled rows.
           if (Array.isArray(ins.reviews) && ins.reviews.length > 0) {
             setReviews((prev) => (prev.length ? prev : ins.reviews));
           }
@@ -150,12 +134,6 @@ export default function BusinessDetailsPage() {
       setShareHint("Could not copy link");
       window.setTimeout(() => setShareHint(""), 2000);
     }
-  }
-
-  function askAiAboutPlace() {
-    const name = biz?.title || id;
-    const q = `Tell me about ${name}${biz?.location ? ` in ${biz.location}` : ""}. What should I know before visiting?`;
-    nav("/chat", { state: { seedQuery: q, fromBusinessId: id } });
   }
 
   function openGalleryAt(i: number) {
@@ -606,6 +584,8 @@ function displayWebsite(url: string): string {
   }
 }
 
+const MAX_INSIGHT_ITEMS_PER_COLUMN = 3;
+
 function InsightPanel({
   title,
   icon,
@@ -621,6 +601,7 @@ function InsightPanel({
     tone === "good" ? "text-secondary" : "text-tertiary";
   const bulletIcon = tone === "good" ? "check_circle" : "warning";
   const bulletColor = tone === "good" ? "text-secondary" : "text-tertiary";
+  const visible = (items || []).slice(0, MAX_INSIGHT_ITEMS_PER_COLUMN);
 
   return (
     <div className="rounded-xl border border-white/40 bg-white/60 p-5">
@@ -631,10 +612,10 @@ function InsightPanel({
         {title}
       </h3>
       <ul className="space-y-3 text-sm text-on-surface">
-        {(items || []).length === 0 && (
+        {visible.length === 0 && (
           <li className="text-on-surface-variant">—</li>
         )}
-        {(items || []).map((it, i) => (
+        {visible.map((it, i) => (
           <li key={i} className="flex items-start gap-2">
             <span className={`material-symbols-outlined mt-0.5 text-base ${bulletColor}`}>
               {bulletIcon}
@@ -648,6 +629,7 @@ function InsightPanel({
 }
 
 function BestForPanel({ items }: { items: string[] }) {
+  const visible = (items || []).slice(0, MAX_INSIGHT_ITEMS_PER_COLUMN);
   return (
     <div className="rounded-xl border border-white/40 bg-white/60 p-5 md:col-span-1">
       <h3 className="mb-3 flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-wider text-primary">
@@ -655,10 +637,10 @@ function BestForPanel({ items }: { items: string[] }) {
         Best For
       </h3>
       <div className="mt-2 flex flex-wrap gap-2">
-        {(items || []).length === 0 && (
+        {visible.length === 0 && (
           <span className="text-sm text-on-surface-variant">—</span>
         )}
-        {(items || []).map((it, i) => (
+        {visible.map((it, i) => (
           <span
             key={i}
             className="rounded-lg border border-primary/10 bg-surface-container px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-primary"

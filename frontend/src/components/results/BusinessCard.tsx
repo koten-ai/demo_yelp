@@ -19,11 +19,13 @@ function Stars({ rating }: { rating: number | null }) {
 }
 
 export default function BusinessCard({ business, compact }: Props) {
+  const to = `/business/${encodeURIComponent(business.id)}`;
   return (
     <Link
-      to={`/business/${encodeURIComponent(business.id)}`}
+      to={to}
       state={{ business: business.raw }}
       className="group block bg-surface-container-lowest rounded-2xl border border-outline-variant/40 card-shadow overflow-hidden hover:shadow-md transition-shadow"
+      target="_blank"
     >
       {!compact && (
         <div className="aspect-[16/10] overflow-hidden bg-surface-container">

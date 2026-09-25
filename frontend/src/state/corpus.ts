@@ -1,4 +1,4 @@
-/** Corpus size from GET /api/health — drives search loader copy. */
+/** Catalog size — drives search loader copy. */
 
 export type CorpusStats = {
   businessCount: number | null;
@@ -52,5 +52,5 @@ export function searchLoadingLabel(verb = "Searching"): string {
   if (businessCount != null && businessCount > 0) {
     return `${verb} ${businessCount.toLocaleString()} ${label}…`;
   }
-  return `${verb} with Zeus…`;
+  return `${verb} local places…`;
 }

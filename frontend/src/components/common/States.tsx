@@ -42,7 +42,7 @@ export function EmptyState({
   );
 }
 
-export function LoadingBlock({ label = "Searching with Zeus…" }: { label?: string }) {
+export function LoadingBlock({ label = "Searching…" }: { label?: string }) {
   return (
     <div
       role="status"
