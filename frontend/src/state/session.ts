@@ -1,4 +1,4 @@
-/** Discovery multi-turn chat id (landing / Explore / Ask AI). Not detail/insight. */
+/** Discovery multi-turn chat id (landing / Explore / Ask AI). */
 const CHAT_KEY = "localai.chat_id";
 const LAST_RESULTS_KEY = "localai.last_results";
 const LAST_ANSWER_KEY = "localai.last_answer";

@@ -109,7 +109,7 @@ body {
   font-weight: bold;
 }
 
-/* Ask AI loading: "Thinking with Zeus" + cycling dots */
+/* Ask AI loading dots */
 @keyframes thinking-dots {
   0% {
     content: "";

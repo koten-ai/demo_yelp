@@ -1,11 +1,7 @@
-/** GET /api/health — app + Zeus client versions for chrome (labeled distinctly). */
+/** Catalog size for chrome and search-loader copy. */
 export type HealthResponse = {
   ok: boolean;
-  /** demo_yelp / local-guide package version (not the Zeus client). */
   app_version?: string;
-  /** Installed kotenai-zeus-client / zeus_client_python package version. */
-  zeus_client_version: string;
-  /** Live or configured corpus size for search-loader copy. */
   business_count?: number | null;
   corpus_label?: string;
   corpus_source?: string;
@@ -15,7 +11,7 @@ export type BusinessCard = {
   name: string;
   description: string;
   image: string;
-  /** Optional gallery (local AI assets under /business-images/<id>/). */
+  /** Optional gallery under /business-images/<id>/. */
   images?: string[];
   business_id?: string;
   rating?: string;
@@ -31,46 +27,25 @@ export type BusinessCard = {
   latitude?: string;
   longitude?: string;
   url?: string;
-  /** Typeahead-only extras from GET /api/suggest */
+  /** Typeahead extras. */
   subtitle?: string;
   source?: string;
 };
 
-/** GET /api/suggest — no-LLM fast tier (run_search). */
 export type SuggestResponse = {
   query: string;
   results: BusinessCard[];
   count: number;
   source: string;
-  sources?: string[];
-  fast_tier?: boolean;
-  ai_process_result?: boolean;
-  target?: string;
   error?: string | null;
 };
 
 export type SearchResponse = {
   chat_id: string;
   query: string;
-  answer: string | Record<string, unknown>;
-  structured_answer: Record<string, unknown> | null;
-  structured_response: Record<string, unknown>;
+  answer: string;
+  structured_answer: { context?: string; tip?: string } | null;
   results: BusinessCard[];
-  trace: Record<string, unknown>;
-  tool_order: { v1: string[]; v2: string[] };
-  target: string;
-  api_version: string;
-  mode: string;
-  model: string;
-  provider: string;
-  zeus_connection: string;
-  zeus_url: string;
-  session_id: string;
-  session_round: number;
-  contract_status: string | null;
-  /** Echo of ClientSettings.ai_process_result for this turn (0.2.1+). */
-  ai_process_result?: boolean;
-  error?: string;
 };
 
 export type ReviewItem = {
@@ -79,9 +54,7 @@ export type ReviewItem = {
   text: string;
   date: string;
   review_id?: string;
-  /** Bare Yelp user id (no user: prefix). */
   user_id?: string;
-  /** User.review_count from joined User doc. */
   user_review_count?: string;
   user_average_stars?: string;
   yelping_since?: string;
@@ -92,10 +65,7 @@ export type ReviewsResponse = {
   reviews: ReviewItem[];
   count: number;
   source?: string;
-  sources?: string[];
-  req_id?: string;
   error?: string | null;
-  ai_process_result?: boolean;
 };
 
 export type InsightResponse = {
@@ -106,10 +76,6 @@ export type InsightResponse = {
   the_bad: string[];
   best_for: string[];
   reviews: ReviewItem[];
-  reviews_source?: string;
-  chat_id?: string;
-  trace?: Record<string, unknown>;
-  answer?: string;
   error?: string;
 };
 
@@ -118,7 +84,6 @@ export type UiBusiness = {
   title: string;
   description: string;
   image: string;
-  /** Gallery paths when local AI images exist for this business. */
   images: string[];
   rating: number | null;
   reviewCount: string;

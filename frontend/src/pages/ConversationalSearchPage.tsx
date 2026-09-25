@@ -5,7 +5,6 @@ import { ErrorBanner } from "../components/common/States";
 import { isAbortError, search } from "../api/client";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { renderSimpleMarkdown } from "../lib/simpleMarkdown";
-import { appendTrace } from "../lib/trace";
 import { clearSession, getChatId, saveLastSearch, setChatId } from "../state/session";
 import type { BusinessCard as Card } from "../api/types";
 
@@ -13,12 +12,14 @@ type Turn = {
   role: "user" | "assistant" | "system";
   text: string;
   results?: Card[];
+  /** Captured at send time — keeps historical turns stable if the toggle flips. */
+  summarize?: boolean;
 };
 
 type ChatLocState = {
   /** Prefill composer (business detail “Ask AI about this place”). */
   seedQuery?: string;
-  /** When true with seedQuery, send immediately (empty Explore failover). */
+  /** When true with seedQuery, send immediately. */
   autoSend?: boolean;
   fromBusinessId?: string;
 };
@@ -35,16 +36,21 @@ export default function ConversationalSearchPage() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  /** On = short written summary plus cards. Off = matching places only. */
+  const [includeSummary, setIncludeSummary] = useState(true);
   const abortRef = useRef<AbortController | null>(null);
   /** Bumped to ignore stale completions after New Search / superseded sends. */
   const requestGenRef = useRef(0);
   const seedAppliedRef = useRef(false);
+  const includeSummaryRef = useRef(includeSummary);
+  includeSummaryRef.current = includeSummary;
 
   const sendQuery = useCallback(async (raw: string) => {
     const q = raw.trim();
     if (!q) return;
-    // Avoid overlapping sends (auto-send + manual, or double effect).
     if (abortRef.current) return;
+
+    const summarize = includeSummaryRef.current;
 
     setInput("");
     setTurns((t) => [...t, { role: "user", text: q }]);
@@ -57,22 +63,29 @@ export default function ConversationalSearchPage() {
 
     try {
       const data = await search(q, getChatId(), {
-        aiProcessResult: true,
+        summarize,
         signal: controller.signal,
       });
       if (gen !== requestGenRef.current) return;
-      appendTrace(q, data);
-      const answer = summaryFromResponse(data.answer, data.structured_answer);
+      const results = Array.isArray(data.results) ? data.results : [];
+      const answer = summarize
+        ? summaryFromResponse(data.answer, data.structured_answer)
+        : "";
       setChatId(data.chat_id);
       saveLastSearch({
         query: q,
-        answer,
-        results: data.results,
+        answer: answer || (summarize ? "" : `${results.length} place(s)`),
+        results,
         chatId: data.chat_id,
       });
       setTurns((t) => [
         ...t,
-        { role: "assistant", text: answer || "(no summary)", results: data.results },
+        {
+          role: "assistant",
+          text: summarize ? answer || "(no summary)" : "",
+          results,
+          summarize,
+        },
       ]);
     } catch (e) {
       if (gen !== requestGenRef.current) return;
@@ -89,14 +102,15 @@ export default function ConversationalSearchPage() {
     }
   }, []);
 
-  // Prefill from business-detail, or auto-send from empty Explore failover.
   useEffect(() => {
     if (!seedQuery || seedAppliedRef.current) return;
     seedAppliedRef.current = true;
 
     if (autoSend) {
-      // Drop autoSend from history so back/remount does not re-fire.
-      nav("/chat", { replace: true, state: { seedQuery, autoSend: false } });
+      nav("/chat", {
+        replace: true,
+        state: { seedQuery, autoSend: false },
+      });
       void sendQuery(seedQuery);
       return;
     }
@@ -111,12 +125,10 @@ export default function ConversationalSearchPage() {
 
   function stopSearch() {
     if (!loading) return;
-    // Keep requestGen so the in-flight catch can append the cancelled chat turn.
     abortRef.current?.abort();
   }
 
   function newSearch() {
-    // Invalidate in-flight work so abort does not add a cancelled turn after clear.
     requestGenRef.current += 1;
     abortRef.current?.abort();
     abortRef.current = null;
@@ -126,20 +138,56 @@ export default function ConversationalSearchPage() {
     setLoading(false);
   }
 
+  const thinkingLabel = includeSummary ? "Thinking" : "Searching";
+  const resultLimit = (t: Turn) =>
+    t.summarize === false ? Math.min(t.results?.length ?? 0, 20) : 5;
+
   return (
     <div className="mx-auto max-w-3xl px-4 md:px-10 py-6 flex flex-col min-h-[calc(100vh-8rem)]">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between mb-4">
         <div>
           <h1 className="text-2xl font-bold">How can I help you discover today?</h1>
-          <p className="text-sm text-on-surface-variant">Multi-turn search over yelp-demo</p>
+          <p className="text-sm text-on-surface-variant">Multi-turn search over local places</p>
         </div>
-        <button
-          type="button"
-          onClick={newSearch}
-          className="text-sm px-3 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-container-low"
-        >
-          New Search
-        </button>
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+          <div
+            className="inline-flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg border border-outline-variant bg-surface-container-lowest select-none"
+            title={
+              includeSummary
+                ? "Write a short summary with the results"
+                : "Show matching places only"
+            }
+          >
+            <span id="ai-summary-label" className="text-on-surface-variant whitespace-nowrap">
+              AI summary
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={includeSummary}
+              aria-labelledby="ai-summary-label"
+              disabled={loading}
+              onClick={() => setIncludeSummary((v) => !v)}
+              className={`relative h-6 w-11 shrink-0 rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 ${
+                includeSummary ? "bg-primary" : "bg-outline-variant"
+              }`}
+            >
+              <span
+                aria-hidden
+                className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  includeSummary ? "translate-x-5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={newSearch}
+            className="text-sm px-3 py-1.5 rounded-lg border border-outline-variant hover:bg-surface-container-low"
+          >
+            New Search
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -151,7 +199,12 @@ export default function ConversationalSearchPage() {
       <div className="flex-1 space-y-6 overflow-y-auto pb-4">
         {turns.length === 0 && !loading && (
           <div className="glass rounded-2xl p-6 text-on-surface-variant text-sm">
-            Try: “quiet coffee shops open now” then “which are good for laptop work?”
+            Try: “donuts in Tampa” then “which of those are coffee shops?”
+            {!includeSummary && (
+              <p className="mt-2 text-xs">
+                AI summary is off — answers list matching businesses without a written summary.
+              </p>
+            )}
           </div>
         )}
         {turns.map((t, i) =>
@@ -174,15 +227,23 @@ export default function ConversationalSearchPage() {
                 }`}
               >
                 {t.role === "assistant" ? (
-                  <div className="text-sm text-on-surface overflow-x-auto">
-                    {renderSimpleMarkdown(t.text)}
-                  </div>
+                  t.summarize === false ? (
+                    <div className="text-xs font-medium text-on-surface-variant mb-1">
+                      {(t.results?.length ?? 0) > 0
+                        ? `${t.results!.length} place${t.results!.length === 1 ? "" : "s"}`
+                        : "No matching places"}
+                    </div>
+                  ) : (
+                    <div className="text-sm text-on-surface overflow-x-auto">
+                      {renderSimpleMarkdown(t.text)}
+                    </div>
+                  )
                 ) : (
                   <p className="text-sm whitespace-pre-wrap">{t.text}</p>
                 )}
                 {t.results && t.results.length > 0 && (
-                  <div className="mt-3 space-y-2">
-                    {t.results.slice(0, 5).map((r, idx) => (
+                  <div className={`space-y-2 ${t.summarize === false ? "mt-1" : "mt-3"}`}>
+                    {t.results.slice(0, resultLimit(t)).map((r, idx) => (
                       <BusinessCard
                         key={(r.business_id || r.name) + idx}
                         business={normalizeBusiness(r, idx)}
@@ -196,10 +257,10 @@ export default function ConversationalSearchPage() {
           )
         )}
         {loading && (
-          <div className="w-full" role="status" aria-live="polite" aria-label="Thinking with Zeus">
+          <div className="w-full" role="status" aria-live="polite" aria-label={thinkingLabel}>
             <div className="w-full max-w-full rounded-2xl border border-outline-variant/40 bg-surface-container-lowest px-4 py-3">
               <p className="text-sm text-on-surface-variant">
-                <span className="thinking-dots">Thinking with Zeus</span>
+                <span className="thinking-dots">{thinkingLabel}</span>
               </p>
             </div>
           </div>

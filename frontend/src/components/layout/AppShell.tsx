@@ -1,7 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchHealth } from "../../api/client";
-import { ensureTraceScript } from "../../lib/trace";
 import { setCorpusFromHealth } from "../../state/corpus";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -9,40 +8,22 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
     isActive ? "text-primary" : "text-on-surface-variant hover:text-primary"
   }`;
 
-function chromeVersionLabel(
-  appVersion: string | null,
-  zeusClientVersion: string | null,
-): string {
-  // Labels must stay distinct: app = demo_yelp/local-guide; client = kotenai-zeus-client.
-  const parts: string[] = [];
-  if (appVersion) parts.push(`LocalAI v${appVersion}`);
-  if (zeusClientVersion) parts.push(`Zeus client v${zeusClientVersion}`);
-  if (parts.length) return parts.join(" · ");
-  return "Powered by Zeus";
-}
-
 export default function AppShell() {
-  // App = local-guide/demo_yelp; Zeus client = kotenai-zeus-client (not SPA package.json).
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [zeusClientVersion, setZeusClientVersion] = useState<string | null>(null);
+  const [chromeLabel, setChromeLabel] = useState("Local guide");
 
   useEffect(() => {
-    ensureTraceScript();
     let cancelled = false;
     fetchHealth()
       .then((h) => {
         if (cancelled) return;
-        if (h?.app_version) {
-          setAppVersion(h.app_version);
-        }
-        if (h?.zeus_client_version) {
-          setZeusClientVersion(h.zeus_client_version);
-        }
-        // Corpus size for search loaders: "Searching N businesses…"
         setCorpusFromHealth(h || {});
+        if (typeof h?.business_count === "number" && h.business_count > 0) {
+          const noun = (h.corpus_label || "businesses").trim() || "businesses";
+          setChromeLabel(`${h.business_count.toLocaleString()} ${noun}`);
+        }
       })
       .catch(() => {
-        /* keep null; chrome still renders without a version pin */
+        /* chrome still renders without a catalog count */
       });
     return () => {
       cancelled = true;
@@ -75,11 +56,8 @@ export default function AppShell() {
               Ask AI
             </NavLink>
           </nav>
-          <div
-            className="text-xs text-on-surface-variant font-mono hidden sm:block text-right"
-            title="LocalAI = this demo app · Zeus client = kotenai-zeus-client"
-          >
-            {chromeVersionLabel(appVersion, zeusClientVersion)}
+          <div className="text-xs text-on-surface-variant font-mono hidden sm:block text-right">
+            {chromeLabel}
           </div>
         </div>
       </header>

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
 export const DEFAULT_SUGGESTIONS = [
-  "Best sushi for a first date",
-  "Quiet parks with wifi",
-  "Cozy cafe for working near downtown",
-  "Best hiking trails with views",
+  "Donuts in Tampa",
+  "Coffee in Philadelphia",
+  "Spas in Tucson",
+  "Tours in New Orleans",
 ] as const;
 
 type Props = {

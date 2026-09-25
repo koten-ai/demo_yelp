@@ -12,7 +12,7 @@ type Props = {
   loading?: boolean;
   placeholder?: string;
   large?: boolean;
-  /** Home typeahead — no LLM; GET /api/suggest */
+  /** Optional typeahead against the local catalog. */
   enableSuggest?: boolean;
   /** Click / Enter on a highlighted suggestion row */
   onSelectSuggestion?: (card: BusinessCard) => void;
