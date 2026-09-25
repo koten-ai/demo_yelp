@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import asdict
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
@@ -191,7 +192,15 @@ async def _search_async(
     model = (provider.get("models") or ["gpt-4o"])[0]
 
     api_version = normalize_api_version(cfg.get("default_api_version", "v2"))
-    mode = cfg.get("default_mode", "open")
+    # Product default is analytics (base-6.1); older configs may still say "auto"/"open".
+    mode = (cfg.get("default_mode") or "analytics").strip() or "analytics"
+    base_id = (cfg.get("default_base_id") or "").strip() or None
+    raw_base_dirs = cfg.get("base_catalog_dirs") or []
+    base_catalog_dirs: list[Path] | None = None
+    if isinstance(raw_base_dirs, (list, tuple)) and raw_base_dirs:
+        base_catalog_dirs = [Path(str(p)) for p in raw_base_dirs if str(p).strip()]
+        if not base_catalog_dirs:
+            base_catalog_dirs = None
     sample = cfg.get("default_sample", "yelp-demo")
     triple = cfg.get("samples", {}).get(sample, {})
     bucket = triple.get("bucket", sample)
@@ -251,6 +260,8 @@ async def _search_async(
             structured=True,
             output_schema=DEMO_OUTPUT_SCHEMA,
             settings=settings,
+            base_id=base_id,
+            base_catalog_dirs=base_catalog_dirs,
         )
 
         CHATS[chat_id]["turns"] = new_turns
@@ -381,6 +392,7 @@ async def _search_async(
         "target": target,
         "api_version": api_version,
         "mode": mode,
+        "base_id": base_id,
         "model": model,
         "provider": provider_id,
         "zeus_connection": zeus_connection,
