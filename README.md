@@ -1,169 +1,60 @@
 # LocalAI (Yelp Demo)
 
-Natural-language local business discovery over the Couchbase **`yelp-demo`** bucket, powered by [Zeus](https://github.com/koten-ai) and [`kotenai-zeus-client` **0.3.0-alpha**](https://github.com/koten-ai/zeus_client_python/releases/tag/0.3.0-alpha) (`run_agent`, `run_search`, `run_verb` / `run_find`). React SPA UI follows Stitch designs in `../stitch_ai_local_guide/`.
+Vite + React SPA for local business discovery. Home, Explore, Ask AI, and business details all read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`.
+
+Running the UI needs Node.js only. It does not use a Zeus engine, an LLM key, or the FastAPI service in `src/local_guide`.
 
 ## Features
 
-- NL search + multi-turn chat against `yelp-demo/_default/_default`
-- Business cards (rating, categories, price, geo) + Leaflet map
-- Business detail with AI review insight (good / bad / best-for)
-- Floating Zeus chat-trace panel (vendored JS)
-- FastAPI backend tailored to the SPA; Vite React frontend
+- Keyword search over the sample catalog (name, categories, city, address, description), ranked with rating and review count
+- Business cards (rating, categories, price, hours, open/closed) and a Leaflet map on Explore
+- Explore filters for open now, price (`$`–`$$$$`), and category
+- Ask AI keeps a multi-turn chat. A follow-up that says “which”, “those”, “these”, “them”, “narrow”, or “only” searches inside the previous turn’s results. A query containing “open” keeps places marked open
+- Ask AI **AI summary** switch: on writes a short summary above the cards; off shows the matching places only
+- Business page with a photo carousel, three generated review blurbs, and a generated good / bad / best-for summary
+- Header count comes from the catalog (`100 businesses`)
+
+Search, suggestions, reviews, and insights are implemented in `frontend/src/api/client.ts`. The SearchBar can debounce a local typeahead (`enableSuggest`), and no page turns that on.
 
 ## Prerequisites
 
-- Zeus Engine reachable with **yelp-demo** scope loaded/enabled
-- LLM API key (xAI Grok by default)
-- Python 3.11+ and Node 20+ (or Docker)
+- Node.js 20+
 
-## Quick start (local)
+## Quick start
 
 ```bash
-# Backend
-cd demo_yelp
-cp config.example.json config.json
-# edit config.json: llm_provider.api_key, zeus url/password
-python3 -m venv .venv && source .venv/bin/activate
-# Monorepo co-dev: pyproject points at file:../zeus_client_python
-pip install -e ".[dev]"
-python -c "from importlib.metadata import version; print(version('kotenai-zeus-client'))"  # expect 0.3.0
-python -c "from zeus_client import run_find, run_verb; from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER; print('client ok')"
-python -m local_guide
-```
-
-```bash
-# Frontend (separate terminal)
 cd demo_yelp/frontend
 npm install
 npm run dev
 ```
 
-Open http://localhost:5173 (proxies `/api` and `/static` to port 5000).
+Open http://localhost:5173. The Vite server does not proxy `/api` or `/static`.
 
-## Docker
-
-Images are split for staging/production reuse:
-
-| File | Image role |
-|------|------------|
-| `Dockerfile.backend` | FastAPI + **kotenai-zeus-client** — Compose default **`target: monorepo`** (sibling editable + bind-mount). Release git tag: `target: release` |
-| `Dockerfile.frontend` | Vite build + nginx SPA; proxies `/api` + `/static` → API |
+Production build:
 
 ```bash
-cd demo_yelp
-cp config.example.json config.json   # fill keys
-
-# Local stack (API :5000, nginx UI :3000) — monorepo client co-dev (no SSH)
-DOCKER_BUILDKIT=1 docker compose up --build
-
-# Optional Vite HMR on :5173
-DOCKER_BUILDKIT=1 docker compose --profile dev up --build
+cd demo_yelp/frontend
+npm run build   # output in frontend/dist
+npm run preview
 ```
-
-Client source is bind-mounted at `/opt/zeus_client_python`; backend `ENVIRONMENT=dev` reloads on client + app edits.
-
-- UI (nginx / staging-shaped): http://localhost:3000  
-- API direct: http://localhost:5000  
-- Vite dev (profile `dev`): http://localhost:5173  
-
-(Compose maps nginx to host **3000** so it does not collide with a local Zeus engine on 8080.)
-
-### Build images alone (CI / staging / prod)
-
-```bash
-# Monorepo co-dev image — from monorepo parent (Compose default)
-cd ..
-DOCKER_BUILDKIT=1 docker build -f demo_yelp/Dockerfile.backend --target monorepo \
-  -t local-guide-backend:TAG .
-
-# Release pin — from demo_yelp/; requires BuildKit + SSH to private client repo
-cd demo_yelp
-DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend --target release \
-  -t local-guide-backend:TAG .
-
-# Frontend — from demo_yelp/
-docker build -f Dockerfile.frontend -t local-guide-frontend:TAG .
-```
-
-Frontend runtime env:
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `BACKEND_UPSTREAM` | `http://backend:5000` | nginx `proxy_pass` target (no trailing slash; use your staging service DNS in other envs) |
-| `NGINX_ENVSUBST_FILTER` | `BACKEND_` | limit envsubst to backend knobs |
-
-Same-origin via nginx means the browser talks only to the frontend origin; CORS is mainly for Vite/local API access.
-
-### Why two Dockerfiles (not one entrypoint)
-
-- Independent tags/rollouts for API vs UI  
-- Smaller backend image (no Node toolchain at runtime)  
-- Edge can be nginx, Cloud Run+CDN, or ingress — same backend image  
-- Local HMR stays a Compose profile (`frontend-dev`), not baked into prod images  
-
-## Configuration
-
-| Setting | Description |
-|---------|-------------|
-| `zeus.url` | Zeus base URL (`ZEUS_URL` overrides) |
-| `zeus.scope_credentials["yelp-demo/_default"]` | Basic auth for the sample scope |
-| `default_mode` | Agent mode (`open` default) |
-| `default_sample` | `yelp-demo` |
-| `llm_provider.api_key` | Required |
-
-## API
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/api/search` | One agent turn `{query, chat_id?, ai_process_result?}` |
-| GET | `/api/suggest?q=&limit=` | No-LLM typeahead (`run_search` — FTS + N1QL hydrate) |
-| GET | `/api/tool-order` | Trace panel tool axes |
-| GET | `/api/health` | Liveness + `zeus_client_version` + corpus size |
-| GET | `/api/business/{id}` | Detail seed via V2 `find` Business + optional N1QL hydrate (no LLM) |
-| GET | `/api/business/{id}/reviews` | Reviews via V2 `find` (`run_verb_from_config`) + optional N1QL hydrate |
-| POST | `/api/business/{id}/insight` | AI review summary |
-
-Home SearchBar debounces `/api/suggest` (~280ms); Enter without a highlighted row runs full `/api/search`. Soft-fails empty so the dropdown stays quiet.
-
-Success search payload matches the Demo Builder kit contract (answer, results, trace, chat_id, session fields, …) with Yelp-oriented card fields.
 
 ## Example queries
 
-1. `quiet coffee shops good for deep work`
-2. `romantic italian dinner under $$$`
-3. `dog-friendly parks or outdoor brunch`
-4. Follow-up: `which of these are open late?`
+These match businesses in the 100-row catalog (Coffee & Tea, parks, Philadelphia, Tampa, and similar).
 
-## Development
+1. `coffee in Philadelphia`
+2. `italian dinner`
+3. `parks in Tampa`
+4. On Ask AI, follow up with `which of these are open?`
 
-```bash
-pytest -q
-cd frontend && npm run build
-```
+## Catalog and photos
 
-## Project layout
+`frontend/src/data/catalog.json` is an array of business cards. Fields include `business_id`, `name`, `categories`, `rating`, `review_count`, `price`, `hours_today`, `is_open`, `address`, `city`, `state`, `latitude`, `longitude`, `description`, `image`, and `images`.
 
-```
-demo_yelp/
-├── src/local_guide/     # FastAPI + agent wrapper
-├── frontend/            # React SPA (+ public/business-images)
-├── scripts/             # finalize / Spaces upload / helpers
-├── docker/              # nginx template for Dockerfile.frontend
-├── Dockerfile.backend
-├── Dockerfile.frontend
-├── tests/
-├── config.example.json
-└── docker-compose.yml
-```
-
-Built with the [Demo Builder Kit](../zeus_client_python/docs/demo-builder/). Reference: `../demo_travel_sample`.
-
-## Business images (local + Spaces CDN)
-
-Layout under `frontend/public/business-images/`:
+Photos live next to the SPA and are copied into the Vite build:
 
 ```text
-business-images/
+frontend/public/business-images/
   manifest.json
   biz:<business_id>/
     1.png
@@ -171,34 +62,109 @@ business-images/
     3.png
 ```
 
-By default the API serves these at relative `/business-images/...`. For a public
-CDN (DO Space `koten-yelp-demo-photos`):
+Catalog image fields are relative (`/business-images/biz:<id>/1.png`). Vite and the nginx image serve `public/` at the site root, so those URLs resolve with no API.
 
-```bash
-# 1) Upload tree (public-read). Needs DO_SPACES_KEY / DO_SPACES_SECRET.
-./scripts/upload_business_images_spaces.sh
-
-# 2) Stamp manifest + Couchbase with absolute CDN URLs
-export BUSINESS_IMAGES_BASE_URL=https://koten-yelp-demo-photos.nyc3.cdn.digitaloceanspaces.com/business-images
-python3 scripts/finalize_business_images.py
-```
+`scripts/upload_business_images_spaces.sh` can copy that tree to the DigitalOcean Space `koten-yelp-demo-photos`. `scripts/finalize_business_images.py` rebuilds `manifest.json` and can stamp Couchbase. Neither script changes what the SPA loads. The catalog keeps the relative paths above.
 
 | Variable | Purpose |
 |----------|---------|
-| `BUSINESS_IMAGES_BASE_URL` | Optional absolute prefix (no trailing slash). When set, catalog + finalize emit CDN URLs instead of `/business-images/...` |
-| `DO_SPACES_PHOTOS_BUCKET` | default `koten-yelp-demo-photos` |
-| `DO_SPACES_PHOTOS_REGION` | default `nyc3` |
-| `FINALIZE_SKIP_COUCHBASE` | `1` to rebuild manifest only |
+| `DO_SPACES_KEY` / `DO_SPACES_SECRET` | Required by the upload script |
+| `DO_SPACES_PHOTOS_BUCKET` | Default `koten-yelp-demo-photos` |
+| `DO_SPACES_PHOTOS_REGION` | Default `nyc3` |
+| `BUSINESS_IMAGES_BASE_URL` | Optional absolute prefix (no trailing slash) passed to finalize when rewriting the manifest |
+| `FINALIZE_SKIP_COUCHBASE` | `1` to rebuild the manifest only |
 
-Enable **CDN** on that Space in the DO UI. Keep data/backup Spaces private.
+## Docker
 
-## Troubleshooting
+`Dockerfile.frontend` builds the SPA and serves it with nginx, including `business-images` from `frontend/public`.
+
+```bash
+cd demo_yelp
+docker build -f Dockerfile.frontend -t local-guide-frontend .
+```
+
+nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. The current SPA never requests those paths.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BACKEND_UPSTREAM` | `http://backend:5000` | nginx `proxy_pass` target (no trailing slash) |
+| `NGINX_ENVSUBST_FILTER` | `BACKEND_` | Limit envsubst to backend knobs |
+
+`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. That API container is unused by this UI. Compose still expects `config.json` and a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** with `VITE_API_PROXY` set; the dev server ignores that variable and still serves the local catalog.
+
+```bash
+# UI image only — see docker build above.
+
+# Full compose stack (Zeus API + nginx UI)
+cp config.example.json config.json   # fill keys if you want the API process to start
+DOCKER_BUILDKIT=1 docker compose up --build
+```
+
+- nginx UI: http://localhost:3000
+- API (unused by the SPA): http://localhost:5000
+- Vite profile `dev`: http://localhost:5173
+
+## Project layout
+
+```text
+demo_yelp/
+├── frontend/                 # React SPA, catalog, and photos
+│   ├── src/data/catalog.json
+│   ├── src/api/client.ts     # in-browser search, reviews, insight
+│   └── public/business-images/
+├── src/local_guide/          # FastAPI + Zeus client (not called by the SPA)
+├── scripts/                  # image upload / finalize helpers
+├── docker/                   # nginx template for Dockerfile.frontend
+├── Dockerfile.frontend
+├── Dockerfile.backend
+├── tests/                    # Python API tests
+├── config.example.json
+└── docker-compose.yml
+```
+
+## Python API (not called by the SPA)
+
+`src/local_guide` is still a FastAPI app over the Couchbase `yelp-demo` bucket via [`kotenai-zeus-client`](../zeus_client_python) (`run_agent`, `run_search`, `run_verb` / `run_find`). `pyproject.toml` depends on the sibling checkout `file:../zeus_client_python`. The Docker release target still installs git tag `0.3.0-alpha` until a `0.3.1` tag exists. `pytest` covers this package, not the SPA.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/search` | One agent turn `{query, chat_id?, ai_process_result?}` |
+| GET | `/api/suggest?q=&limit=` | No-LLM typeahead (`run_search`) |
+| GET | `/api/tool-order` | Trace panel tool axes |
+| GET | `/api/health` | Liveness, `zeus_client_version`, corpus size |
+| GET | `/api/business/{id}` | Detail via V2 `find` |
+| GET | `/api/business/{id}/reviews` | Reviews via V2 `find` |
+| POST | `/api/business/{id}/insight` | AI review summary |
+
+There is no chat-trace panel in the SPA. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The vendored `zeus_client_chat_trace.js` bundle is not in `src/local_guide/static/`.
+
+To run the API anyway:
+
+```bash
+cd demo_yelp
+cp config.example.json config.json
+# edit config.json: llm_provider.api_key, zeus url/password
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ../zeus_client_python
+pip install -e ".[dev]" --no-deps
+python -m local_guide    # http://localhost:5000
+```
+
+| Setting | Description |
+|---------|-------------|
+| `zeus.url` | Zeus base URL (`ZEUS_URL` overrides). `config.example.json` uses `http://host.docker.internal:8080` |
+| `zeus.scope_credentials["yelp-demo/_default"]` | Basic auth for the sample scope |
+| `default_mode` | `analytics` in `config.example.json` |
+| `default_sample` | `yelp-demo` |
+| `llm_provider.api_key` | Required for agent turns |
+
+```bash
+pytest -q
+```
 
 | Symptom | Fix |
 |---------|-----|
 | `no Zeus URL configured` | Set `zeus.url` or `ZEUS_URL` |
 | `llm_provider has no api_key` | Edit `config.json` |
-| Empty cards | Check Zeus data + mode catalog sync |
-| Docker cannot reach Zeus | Use `host.docker.internal` |
-| No photos | Academic Yelp dump often has none; generate under `frontend/public/business-images` or set CDN base |
-| CDN images 403 | Public-read ACL / bucket policy; probe with `curl -I` on the `.cdn.` URL |
+| Docker API cannot reach Zeus | Use `host.docker.internal` |
+| SPA has no photos | Files belong under `frontend/public/business-images/biz:<id>/{1,2,3}.png` |
