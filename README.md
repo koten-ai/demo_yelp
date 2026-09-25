@@ -154,7 +154,9 @@ python -m local_guide    # http://localhost:5000
 |---------|-------------|
 | `zeus.url` | Zeus base URL (`ZEUS_URL` overrides). `config.example.json` uses `http://host.docker.internal:8080` |
 | `zeus.scope_credentials["yelp-demo/_default"]` | Basic auth for the sample scope |
-| `default_mode` | `analytics` in `config.example.json` |
+| `default_mode` | Agent mode. `analytics` in `config.example.json` (deploy pins analytics + `default_base_id=base-6.1`) |
+| `default_base_id` | Catalog pin passed to `run_agent` (`base-6.1` loads `chat_request_analytics_base-6.1.json`) |
+| `base_catalog_dirs` | Directories searched for that pinned catalog file (`/app/base_catalogs` in the example) |
 | `default_sample` | `yelp-demo` |
 | `llm_provider.api_key` | Required for agent turns |
 
