@@ -22,6 +22,7 @@ async def test_search_passes_analytics_base_id(monkeypatch):
         captured["mode"] = args[6] if len(args) > 6 else kwargs.get("mode")
         captured["base_id"] = kwargs.get("base_id")
         captured["base_catalog_dirs"] = kwargs.get("base_catalog_dirs")
+        captured["chat_req_override"] = kwargs.get("chat_req_override")
         return "ok", {"notes": []}, [], {"session_id": "", "round": 0}, _fake_structured()
 
     async def fake_load_config():
@@ -65,11 +66,24 @@ async def test_search_passes_analytics_base_id(monkeypatch):
     monkeypatch.setattr(search_mod, "extract_businesses", lambda _t: [])
     monkeypatch.setattr(search_mod, "parse_markdown_answer", lambda _a: None)
 
+    live = {
+        "messages": [{"role": "system", "content": "## SCOPE BRIEF\n\n## MINI-SCHEMA\n"}],
+        "verbs": [{"name": "find"}],
+    }
+
+    async def fake_fetch(zeus_url, mode, bucket, scope):
+        captured["fetched"] = (zeus_url, mode, bucket, scope)
+        return live
+
+    monkeypatch.setattr(search_mod, "fetch_search_chat_request", fake_fetch)
+
     out = await search_mod._search_async("pizza in Tampa", None, ai_process_result=False)
 
     assert captured["mode"] == "analytics"
     assert captured["base_id"] == "base-6.1"
     assert captured["base_catalog_dirs"] == [Path("/app/base_catalogs")]
+    assert captured["chat_req_override"] is live
+    assert captured["fetched"][1:] == ("analytics", "yelp-demo", "_default")
     assert out["mode"] == "analytics"
     assert out["base_id"] == "base-6.1"
 
@@ -83,6 +97,7 @@ async def test_search_defaults_mode_analytics_when_missing(monkeypatch):
     async def fake_run_agent(*args, **kwargs):
         captured["mode"] = args[6] if len(args) > 6 else kwargs.get("mode")
         captured["base_id"] = kwargs.get("base_id")
+        captured["chat_req_override"] = kwargs.get("chat_req_override")
         return "ok", {"notes": []}, [], {"session_id": "", "round": 0}, _fake_structured()
 
     async def fake_load_config():
@@ -117,9 +132,20 @@ async def test_search_defaults_mode_analytics_when_missing(monkeypatch):
     monkeypatch.setattr(search_mod, "extract_businesses", lambda _t: [])
     monkeypatch.setattr(search_mod, "parse_markdown_answer", lambda _a: None)
 
+    live = {
+        "messages": [{"role": "system", "content": "## SCOPE BRIEF\n\n## MINI-SCHEMA\n"}],
+        "verbs": [{"name": "find"}],
+    }
+
+    async def fake_fetch(*_args, **_kwargs):
+        return live
+
+    monkeypatch.setattr(search_mod, "fetch_search_chat_request", fake_fetch)
+
     out = await search_mod._search_async("coffee", None)
 
     assert captured["mode"] == "analytics"
     assert captured["base_id"] is None
+    assert captured["chat_req_override"] is live
     assert out["mode"] == "analytics"
     assert out.get("base_id") is None

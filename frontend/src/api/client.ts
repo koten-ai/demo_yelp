@@ -216,22 +216,44 @@ export async function search(
   options?: SearchOptions
 ): Promise<SearchResponse> {
   const q = query.trim();
-  await delay(420, options?.signal);
-  const refine =
-    Boolean(chatId) &&
-    lastResultsByChat.has(chatId || "") &&
-    /\b(which|those|them|these|narrow|only)\b/i.test(q);
-  const pool = refine ? lastResultsByChat.get(chatId || "") || BUSINESSES : BUSINESSES;
-  let results = rank(q, pool, 12);
-  if (refine && results.length === 0) results = rank(q, BUSINESSES, 12);
-  const id = chatId || `local-${Date.now().toString(36)}`;
-  lastResultsByChat.set(id, results);
-  const summarizeOn = options?.summarize ?? true;
+  if (!q) {
+    return {
+      chat_id: chatId || "",
+      query: "",
+      answer: "",
+      structured_answer: null,
+      results: [],
+    };
+  }
+  const res = await fetch("/api/search", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      query: q,
+      chat_id: chatId || null,
+      ai_process_result: Boolean(options?.summarize),
+    }),
+    signal: options?.signal,
+  });
+  const data = (await res.json().catch(() => ({}))) as SearchResponse & {
+    error?: string;
+    detail?: { error?: string } | string;
+  };
+  if (!res.ok) {
+    const detail = data.detail;
+    const message =
+      data.error ||
+      (typeof detail === "string" ? detail : detail?.error) ||
+      `search failed (${res.status})`;
+    throw new Error(message);
+  }
+  const results = Array.isArray(data.results) ? data.results : [];
+  if (data.chat_id) lastResultsByChat.set(data.chat_id, results);
   return {
-    chat_id: id,
-    query: q,
-    answer: summarizeOn ? summarize(q, results) : "",
-    structured_answer: null,
+    chat_id: data.chat_id || chatId || "",
+    query: data.query || q,
+    answer: typeof data.answer === "string" ? data.answer : "",
+    structured_answer: data.structured_answer ?? null,
     results,
   };
 }

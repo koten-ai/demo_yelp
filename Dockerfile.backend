@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# LocalAI API image (FastAPI + kotenai-zeus-client @ 0.3.0-alpha).
+# LocalAI API image (FastAPI + kotenai-zeus-client).
 #
 # Release pin (default) — build from this directory with BuildKit + SSH agent
 # (private repo koten-ai/zeus_client_python):
@@ -7,11 +7,13 @@
 #   cd demo_yelp
 #   DOCKER_BUILDKIT=1 docker build --ssh default -f Dockerfile.backend -t local-guide-backend .
 #
-# Override the client ref:
+# Override the client ref (package 0.3.1 once tagged; monorepo bind-mount uses live tree):
 #   --build-arg ZEUS_CLIENT_GIT_REF=0.3.0-alpha
 #
-# Monorepo offline fallback (no git auth) — build from monorepo parent and
-# install the sibling checkout instead of the git tag:
+# Monorepo offline pin (no GitHub SSH) — build from the monorepo parent and
+# install tag 0.3.1-alpha out of the sibling clone. Do not install that
+# repo's working tree: HEAD is client 2.x and no longer ships
+# zeus_client.agent / zeus_client.trace, which this API imports.
 #
 #   cd koten-ai
 #   DOCKER_BUILDKIT=1 docker build \
@@ -63,36 +65,40 @@ EXPOSE 5000
 CMD ["python", "-m", "local_guide"]
 
 # ---------------------------------------------------------------------------
-# monorepo: install sibling zeus_client_python from build context parent
+# monorepo: install kotenai-zeus-client 0.3.1-alpha from the sibling git tag
 # Build context: koten-ai/  target: monorepo
 #
-# Editable install at /opt/zeus_client_python so Compose can bind-mount the
-# host checkout for live co-dev (see docker-compose.yml).
+# Archive the tag (not the working tree) and install a normal wheel. An
+# editable install plus a Compose bind-mount of ../zeus_client_python would
+# load client 2.x at runtime and drop zeus_client.agent.
 # ---------------------------------------------------------------------------
 FROM base AS monorepo
 
-COPY zeus_client_python /opt/zeus_client_python
+ARG ZEUS_CLIENT_TREE_REF=0.3.1-alpha
+
 COPY demo_yelp/pyproject.toml ./
 COPY demo_yelp/src ./src
 COPY demo_yelp/data ./data
 COPY demo_yelp/config.example.json ./
 
-RUN pip install --no-cache-dir -e /opt/zeus_client_python \
+RUN --mount=type=bind,source=zeus_client_python,target=/zeus_src,ro \
+    mkdir -p /opt/zeus_client_python \
+    && git -C /zeus_src archive "${ZEUS_CLIENT_TREE_REF}" \
+        | tar -C /opt/zeus_client_python -xf - \
+    && pip install --no-cache-dir /opt/zeus_client_python \
     && pip install --no-cache-dir \
         "fastapi==0.115.6" \
         "uvicorn[standard]==0.34.0" \
         "httpx==0.28.1" \
         "python-multipart==0.0.20" \
     && pip install --no-cache-dir --no-deps -e . \
-    && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client')); from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER" \
+    && python -c "from importlib.metadata import version; v=version('kotenai-zeus-client'); print('kotenai-zeus-client=' + v); assert v.startswith('0.3.'), v; from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER; from zeus_client.trace.session_hops import select_primary_req_id" \
     && test -d /opt/zeus_client_python/src
 
 ENV PORT=5000
 ENV ZEUS_CLIENT_CONFIG_DIR=/app
 ENV ZEUS_CHAT_REQUESTS_DIR=/app/data/chat_requests
 ENV CHAT_LOG_PATH=/app/data/chats.jsonl
-# Used by local_guide.__main__ so uvicorn reload watches the client tree too.
-ENV ZEUS_CLIENT_SRC=/opt/zeus_client_python/src
 
 EXPOSE 5000
 CMD ["python", "-m", "local_guide"]

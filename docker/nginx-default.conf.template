@@ -25,7 +25,7 @@ server {
         proxy_set_header Connection "";
     }
 
-    # Vendored zeus_client_chat_trace.js and other backend static assets.
+    # Backend static assets (if any). Chat-trace widget loads from CDN, not here.
     location /static/ {
         proxy_pass ${BACKEND_UPSTREAM};
         proxy_http_version 1.1;

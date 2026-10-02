@@ -1,6 +1,7 @@
 # Local / staging-shaped stack: API + nginx SPA.
-# Default backend target is **monorepo** (sibling ../zeus_client_python editable
-# + bind-mount) for client co-dev. Release git-tag pin:
+# Default backend target is **monorepo**: kotenai-zeus-client 0.3.1-alpha
+# archived from the sibling repo tag (the working tree is client 2.x).
+# Release git-tag pin over SSH instead:
 #   target: release + context: .  (see comments on backend.build)
 #   docker compose up --build
 # Vite HMR (optional):
@@ -9,10 +10,12 @@
 services:
   backend:
     build:
-      # Monorepo co-dev (default): install sibling checkout editable and mount it.
+      # Monorepo (default): 0.3.1-alpha from the sibling clone, no GitHub SSH.
       context: ..
       dockerfile: demo_yelp/Dockerfile.backend
       target: monorepo
+      args:
+        ZEUS_CLIENT_TREE_REF: "0.3.1-alpha"
       # Release pin instead (needs SSH agent for private client repo):
       #   context: .
       #   dockerfile: Dockerfile.backend
@@ -30,7 +33,6 @@ services:
       CHAT_LOG_PATH: "/app/data/chats.jsonl"
       ZEUS_CLIENT_CONFIG_DIR: "/app"
       ZEUS_CHAT_REQUESTS_DIR: "/app/data/chat_requests"
-      ZEUS_CLIENT_SRC: "/opt/zeus_client_python/src"
       # Fast-tier suggest N1QL hydrate (FTS src_keys → business cards)
       COUCHBASE_QUERY_URL: "http://host.docker.internal:8093"
       COUCHBASE_USERNAME: "Administrator"
@@ -43,8 +45,6 @@ services:
       - ./src/local_guide:/app/src/local_guide
       # AI-generated top-business photos (served at /business-images).
       - ./frontend/public/business-images:/app/frontend/public/business-images
-      # Live cascade of kotenai-zeus-client edits (matches editable install path).
-      - ../zeus_client_python:/opt/zeus_client_python
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

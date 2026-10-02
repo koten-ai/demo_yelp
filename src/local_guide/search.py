@@ -148,6 +148,88 @@ def _answer_is_empty(answer: object) -> bool:
     return text.lower() in _EMPTY_ANSWER_MARKERS
 
 
+def _chat_request_text(doc: dict) -> str:
+    messages = doc.get("messages") if isinstance(doc.get("messages"), list) else []
+    if messages and isinstance(messages[0], dict):
+        return str(messages[0].get("content") or "")
+    return ""
+
+
+async def fetch_search_chat_request(
+    zeus_url: str,
+    mode: str,
+    bucket: str,
+    scope: str,
+) -> dict:
+    """Live ``chat_request.json`` for this scope. That document is the session body.
+
+    A base-catalog file selected by ``base_id`` is not this document.
+    """
+    from zeus_client.zeus.catalog import load_live_chat_request
+
+    doc = await load_live_chat_request(zeus_url, mode, bucket, scope, {})
+    if not isinstance(doc, dict):
+        raise ValueError(f"live chat_request for {bucket}/{scope} was not a JSON object")
+    content = _chat_request_text(doc)
+    if "## SCOPE BRIEF" not in content or "## MINI-SCHEMA" not in content:
+        raise ValueError(
+            f"live chat_request for {bucket}/{scope} mode {mode} "
+            "has no scope brief or mini-schema"
+        )
+    return doc
+
+
+async def _run_search_agent(
+    *,
+    zeus_url: str,
+    zcfg: dict,
+    base_url: str,
+    api_key: str,
+    model: str,
+    api_version: str,
+    mode: str,
+    bucket: str,
+    scope: str,
+    collection: str,
+    message: str,
+    prior_turns: list,
+    provider_id: str,
+    chat_id: str,
+    prior_sid: str,
+    prior_round: int,
+    settings: ClientSettings,
+    base_id: str | None,
+    base_catalog_dirs: list[Path] | None,
+    chat_request: dict,
+):
+    """One agent turn. ``chat_request`` is the session create body."""
+    return await run_agent(
+        zeus_url,
+        zcfg,
+        base_url,
+        api_key,
+        model,
+        api_version,
+        mode,
+        bucket,
+        scope,
+        collection,
+        message,
+        prior_turns,
+        optimized=True,
+        provider_id=provider_id,
+        conv_id=chat_id,
+        zeus_session_id=prior_sid,
+        zeus_round=prior_round,
+        structured=True,
+        output_schema=DEMO_OUTPUT_SCHEMA,
+        settings=settings,
+        base_id=base_id,
+        base_catalog_dirs=base_catalog_dirs,
+        chat_req_override=chat_request,
+    )
+
+
 async def run_search(
     query: str,
     chat_id: str | None = None,
@@ -239,30 +321,61 @@ async def _search_async(
             CHATS[chat_id]["zeus_round"] = 0
 
         settings = ClientSettings(ai_process_result=bool(ai_process_result))
-        answer, trace, new_turns, session_meta, structured = await run_agent(
-            zeus_url,
-            zcfg,
-            base_url,
-            api_key,
-            model,
-            api_version,
-            mode,
-            bucket,
-            scope,
-            collection,
-            message,
-            prior_turns,
-            optimized=True,
-            provider_id=provider_id,
-            conv_id=chat_id,
-            zeus_session_id=prior_sid,
-            zeus_round=prior_round,
-            structured=True,
-            output_schema=DEMO_OUTPUT_SCHEMA,
-            settings=settings,
-            base_id=base_id,
-            base_catalog_dirs=base_catalog_dirs,
-        )
+        chat_request = await fetch_search_chat_request(zeus_url, mode, bucket, scope)
+        turn_zcfg = zcfg
+        try:
+            answer, trace, new_turns, session_meta, structured = await _run_search_agent(
+                zeus_url=zeus_url,
+                zcfg=turn_zcfg,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                api_version=api_version,
+                mode=mode,
+                bucket=bucket,
+                scope=scope,
+                collection=collection,
+                message=message,
+                prior_turns=prior_turns,
+                provider_id=provider_id,
+                chat_id=chat_id,
+                prior_sid=prior_sid,
+                prior_round=prior_round,
+                settings=settings,
+                base_id=base_id,
+                base_catalog_dirs=base_catalog_dirs,
+                chat_request=chat_request,
+            )
+        except RuntimeError as exc:
+            # Stale Basic credentials 401 before the session body is posted.
+            # This engine accepts the turn without that login. Retry once so
+            # the live chat request is still the session body.
+            if "login failed" not in str(exc).lower():
+                raise
+            public = dict(zcfg)
+            public["auth_mode"] = "none"
+            answer, trace, new_turns, session_meta, structured = await _run_search_agent(
+                zeus_url=zeus_url,
+                zcfg=public,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                api_version=api_version,
+                mode=mode,
+                bucket=bucket,
+                scope=scope,
+                collection=collection,
+                message=message,
+                prior_turns=prior_turns,
+                provider_id=provider_id,
+                chat_id=chat_id,
+                prior_sid=prior_sid,
+                prior_round=prior_round,
+                settings=settings,
+                base_id=base_id,
+                base_catalog_dirs=base_catalog_dirs,
+                chat_request=chat_request,
+            )
 
         CHATS[chat_id]["turns"] = new_turns
         session_error = str((trace or {}).get("session_error") or "")
