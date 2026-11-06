@@ -1,0 +1,83 @@
+{
+  "profile": "development",
+  "client_floor": "client-floor-6.1",
+  "chat_requests_dir": "data/chat_requests",
+  "_comment": "Secret-free. Copy .env.example to .env and set LLM_API_KEY and ZEUS_PASSWORD. Do not put secrets in this file. zeus.auth_mode, settings.mode, llm.base_url, and llm.model are env sentinels. zeus.password_env and llm.api_key_env are env names.",
+  "zeus": {
+    "url": "http://localhost:8080",
+    "auth_mode": "ZEUS_AUTH_MODE",
+    "timeout_s": 60,
+    "username": "demo_1",
+    "password_env": "ZEUS_PASSWORD",
+    "enable_durable_sessions": true,
+    "scope_credentials": {
+      "yelp-demo/_default": {
+        "username": "demo_1",
+        "password_env": "ZEUS_PASSWORD"
+      }
+    },
+    "scope_contracts": {
+      "yelp-demo/_default": {
+        "auto": {
+          "contract_id": "auto_v4",
+          "contract_hash": "md5:98bd0e732075dda525e834830a7f70be"
+        },
+        "analytics": {
+          "contract_id": "analytics_v4",
+          "contract_hash": "md5:af6975ab95a04f22d83ac0a0a01ab4b6"
+        }
+      }
+    }
+  },
+  "target": {
+    "bucket": "yelp-demo",
+    "scope": "_default",
+    "collection": "_default"
+  },
+  "llm": {
+    "provider": "xai",
+    "base_url": "LLM_BASE_URL",
+    "model": "LLM_MODEL",
+    "api_key_env": "LLM_API_KEY",
+    "timeout_s": 120
+  },
+  "settings": {
+    "mode": "ZEUS_MODE",
+    "durable_sessions": true,
+    "ai_process_result": false,
+    "max_rounds": 12,
+    "ignore_user_tool_path_hints": true
+  },
+  "session": {
+    "semantic_cache": {
+      "enabled": false
+    }
+  },
+  "chat_requests_sync": {
+    "scopes": "from_contracts",
+    "modes": ["analytics", "auto"],
+    "on_startup": true
+  },
+  "default_api_version": "v2",
+  "default_mode": "analytics",
+  "default_base_id": "base-6.1",
+  "base_catalog_dirs": ["/app/base_catalogs"],
+  "default_sample": "yelp-demo",
+  "samples": {
+    "yelp-demo": {
+      "bucket": "yelp-demo",
+      "scope": "_default",
+      "collection": "_default"
+    }
+  },
+  "couchbase": {
+    "_comment": "N1QL hydrate reads COUCHBASE_QUERY_URL, COUCHBASE_USERNAME, and COUCHBASE_PASSWORD from the environment.",
+    "query_url": "http://host.docker.internal:8093",
+    "username": "Administrator"
+  },
+  "ui": {
+    "_comment": "Search loader copy. Omit business_count to use live Hub collection_counts for the default sample.",
+    "corpus_label": "businesses",
+    "business_count": null
+  }
+}

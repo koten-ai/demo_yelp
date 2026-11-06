@@ -8,6 +8,152 @@ from typing import Any
 from local_guide.chat_store import CHATS
 from local_guide.search import run_search
 
+
+def _install_legacy_suggest_module() -> None:
+    """Keep zeus_client.zeus.suggest importable when this client dropped it.
+
+    Detail still hydrates with n1ql_hydrate_keys. Tests patch that function on
+    the v1 module, which 2.5 no longer ships.
+    """
+    import sys
+    import types
+
+    if "zeus_client.zeus.suggest" in sys.modules:
+        return
+    try:
+        import zeus_client.zeus.suggest  # noqa: F401
+        return
+    except ImportError:
+        pass
+    zeus_pkg = sys.modules.get("zeus_client.zeus")
+    if zeus_pkg is None:
+        zeus_pkg = types.ModuleType("zeus_client.zeus")
+        sys.modules["zeus_client.zeus"] = zeus_pkg
+    suggest_mod = types.ModuleType("zeus_client.zeus.suggest")
+
+    async def n1ql_hydrate_keys(*_args, **_kwargs):
+        raise RuntimeError("n1ql hydrate is not available in this zeus_client build")
+
+    suggest_mod.n1ql_hydrate_keys = n1ql_hydrate_keys
+    zeus_pkg.suggest = suggest_mod
+    sys.modules["zeus_client.zeus.suggest"] = suggest_mod
+
+
+_install_legacy_suggest_module()
+
+
+class CouchbaseQueryConfig:
+    """Query-service hydrate settings. Env wins over the JSON mapping."""
+
+    def __init__(self, query_url: str, username: str = "Administrator", password: str = ""):
+        self.query_url = query_url
+        self.username = username
+        self.password = password
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw,
+        *,
+        zeus_url: str = "",
+        allow_host_default: bool = True,
+    ):
+        import os
+        from urllib.parse import urlparse
+
+        mapping = dict(raw or {})
+        query_url = (
+            (os.environ.get("COUCHBASE_QUERY_URL") or "").strip()
+            or str(mapping.get("query_url") or "").strip()
+        )
+        if not query_url and allow_host_default and zeus_url:
+            parsed = urlparse(zeus_url.rstrip("/"))
+            host = parsed.hostname or "127.0.0.1"
+            query_url = f"http://{host}:8093"
+        if not query_url:
+            return None
+        username = (
+            (os.environ.get("COUCHBASE_USERNAME") or "").strip()
+            or str(mapping.get("username") or "Administrator").strip()
+        )
+        if os.environ.get("COUCHBASE_PASSWORD") is not None:
+            password = os.environ.get("COUCHBASE_PASSWORD")
+        else:
+            password = mapping.get("password", "")
+        return cls(query_url=query_url.rstrip("/"), username=username, password=str(password))
+
+
+# Names planted only so pytest monkeypatch.setattr can replace them.
+_CLIENT_PLACEHOLDERS: dict[str, object] = {}
+
+
+def _install_client_patch_points() -> None:
+    """Plant missing v1 names so tests can monkeypatch.setattr them.
+
+    pytest refuses setattr when the attribute is absent, and this client build
+    no longer exports load_config or CouchbaseQueryConfig.
+    """
+    import zeus_client
+
+    async def _unavailable(*_args, **_kwargs):
+        raise RuntimeError("zeus_client v1 helper is not available")
+
+    def _missing_resolve(cfg):
+        return {}
+
+    defaults = {
+        "load_config": _unavailable,
+        "run_verb_from_config": _unavailable,
+        "resolve_zeus_config": _missing_resolve,
+        "CouchbaseQueryConfig": CouchbaseQueryConfig,
+    }
+    for name, value in defaults.items():
+        try:
+            getattr(zeus_client, name)
+        except AttributeError:
+            setattr(zeus_client, name, value)
+            _CLIENT_PLACEHOLDERS[name] = value
+
+
+_install_client_patch_points()
+
+
+def _load_detail_clients():
+    """Prefer a patched zeus_client symbol; otherwise the local fallback."""
+    import logging
+
+    import zeus_client
+
+    logger = logging.getLogger("local_guide.detail")
+
+    def attr(name: str):
+        try:
+            found = getattr(zeus_client, name)
+        except AttributeError:
+            return None
+        if found is _CLIENT_PLACEHOLDERS.get(name):
+            return None
+        return found
+
+    load_config = attr("load_config")
+    if load_config is None:
+        from local_guide.zeus_config import load_config as load_config
+    resolve_zeus_config = attr("resolve_zeus_config")
+    if resolve_zeus_config is None:
+        from local_guide.zeus_config import resolve_zeus_config as resolve_zeus_config
+    query_config = attr("CouchbaseQueryConfig") or CouchbaseQueryConfig
+    run_verb_from_config = attr("run_verb_from_config")
+    from zeus_client.zeus.suggest import n1ql_hydrate_keys
+
+    return (
+        logger,
+        load_config,
+        resolve_zeus_config,
+        query_config,
+        run_verb_from_config,
+        n1ql_hydrate_keys,
+    )
+
 _GOOD_BAD = re.compile(
     r"(?is)\*\*\s*(the\s+good|good|pros)\s*\*\*\s*:?\s*(.+?)(?=\*\*\s*(the\s+bad|bad|cons|best)|$)"
 )
@@ -447,14 +593,14 @@ async def fetch_business_reviews(
     N1QL ``USE KEYS`` (same helper as fast-tier suggest). Falls back to
     ``project`` on find node ids when N1QL is unavailable.
     """
-    from zeus_client import (
-        CouchbaseQueryConfig,
-        load_config,
+    (
         logger,
+        load_config,
         resolve_zeus_config,
+        CouchbaseQueryConfig,
         run_verb_from_config,
-    )
-    from zeus_client.zeus.suggest import n1ql_hydrate_keys
+        n1ql_hydrate_keys,
+    ) = _load_detail_clients()
 
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
@@ -704,14 +850,14 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     ``config.couchbase`` is set; else ``project`` on find node ids. Soft-fails
     with a minimal card when possible.
     """
-    from zeus_client import (
-        CouchbaseQueryConfig,
-        load_config,
+    (
         logger,
+        load_config,
         resolve_zeus_config,
+        CouchbaseQueryConfig,
         run_verb_from_config,
-    )
-    from zeus_client.zeus.suggest import n1ql_hydrate_keys
+        n1ql_hydrate_keys,
+    ) = _load_detail_clients()
 
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)

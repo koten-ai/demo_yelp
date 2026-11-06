@@ -1,9 +1,25 @@
 """Fast-tier typeahead via kotenai-zeus-client run_search (no LLM)."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from zeus_client import SuggestOptions, load_config, logger, run_search_from_config
+from zeus_client import SuggestOptions
+
+from local_guide.zeus_config import load_config
+
+logger = logging.getLogger("local_guide.suggest")
+
+
+async def run_search_from_config(*args, **kwargs):
+    """No-LLM typeahead. Suggest never reads LLM_API_KEY."""
+    try:
+        from zeus_client import run_search_from_config as client_run
+    except ImportError:
+        client_run = None
+    if client_run is None:
+        raise RuntimeError("run_search_from_config is not available")
+    return await client_run(*args, **kwargs)
 
 DEFAULT_LIMIT = 8
 MIN_QUERY_LEN = 2

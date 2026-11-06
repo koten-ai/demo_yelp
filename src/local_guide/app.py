@@ -147,7 +147,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tool-order")
     async def api_tool_order():
-        from zeus_client import build_tool_order
+        from local_guide.search import build_tool_order
 
         return build_tool_order(CHATS)
 

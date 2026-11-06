@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn[standard]==0.34.0",
     "httpx==0.28.1",
     "python-multipart==0.0.20",
+    "python-dotenv==1.2.2",
     # Monorepo co-dev: sibling checkout (default). Docker release target still
     # preinstalls git tag 0.3.0-alpha then `pip install --no-deps -e .`.
     # Productized pin only: swap to

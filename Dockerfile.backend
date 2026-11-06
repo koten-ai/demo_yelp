@@ -41,7 +41,8 @@ ARG ZEUS_CLIENT_GIT_URL=ssh://git@github.com/koten-ai/zeus_client_python.git
 COPY pyproject.toml ./
 COPY src ./src
 COPY data ./data
-COPY config.example.json ./
+# Secret-free config is baked in. Do not copy .env; Compose bind-mounts it.
+COPY config.json ./
 
 RUN --mount=type=ssh \
     pip install --no-cache-dir \
@@ -51,6 +52,7 @@ RUN --mount=type=ssh \
         "uvicorn[standard]==0.34.0" \
         "httpx==0.28.1" \
         "python-multipart==0.0.20" \
+        "python-dotenv==1.2.2" \
     && pip install --no-cache-dir --no-deps -e . \
     && python -c "from importlib.metadata import version; v=version('kotenai-zeus-client'); print(f'kotenai-zeus-client={v}'); assert v.startswith('0.3.'), v"
 
@@ -75,7 +77,8 @@ COPY zeus_client_python /opt/zeus_client_python
 COPY demo_yelp/pyproject.toml ./
 COPY demo_yelp/src ./src
 COPY demo_yelp/data ./data
-COPY demo_yelp/config.example.json ./
+# Secret-free config is baked in. Do not copy .env; Compose bind-mounts it.
+COPY demo_yelp/config.json ./
 
 RUN pip install --no-cache-dir -e /opt/zeus_client_python \
     && pip install --no-cache-dir \
@@ -83,6 +86,7 @@ RUN pip install --no-cache-dir -e /opt/zeus_client_python \
         "uvicorn[standard]==0.34.0" \
         "httpx==0.28.1" \
         "python-multipart==0.0.20" \
+        "python-dotenv==1.2.2" \
     && pip install --no-cache-dir --no-deps -e . \
     && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client')); from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER" \
     && test -d /opt/zeus_client_python/src

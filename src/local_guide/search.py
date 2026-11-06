@@ -1,35 +1,72 @@
 """Local business search via the kotenai-zeus-client agent loop."""
 from __future__ import annotations
 
+import logging
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from zeus_client import (
-    ClientSettings,
-    StructuredAgentResponse,
-    build_tool_order,
-    load_config,
-    logger,
-    normalize_api_version,
-    resolve_llm_provider_config,
-    resolve_zeus_config,
-    run_agent,
-)
+from zeus_client import ClientSettings
 
 from local_guide.answer_parser import parse_markdown_answer, structured_answer_to_results
 from local_guide.chat_store import CHATS, chat_lock, persist_chat
 from local_guide.output_schema import DEMO_OUTPUT_SCHEMA
 from local_guide.results_parser import extract_businesses, zeus_data_to_results
+from local_guide.zeus_config import (
+    env_text,
+    load_config,
+    resolve_llm_provider_config,
+    resolve_zeus_config,
+)
+
+logger = logging.getLogger("local_guide.search")
 
 try:
     from zeus_client import user_facing_answer as _user_facing_answer
 except ImportError:  # pragma: no cover - older client pins
     def _user_facing_answer(answer, *, ui_text=None, layer_summary=None):  # type: ignore[misc]
         return answer if isinstance(answer, str) else ("" if answer is None else str(answer))
+
+
+def normalize_api_version(value: object) -> str:
+    text = str(value or "v2").strip().lower()
+    return text if text in {"v1", "v2"} else "v2"
+
+
+def build_tool_order(chats=None):
+    try:
+        from zeus_client import build_tool_order as client_build
+    except ImportError:
+        client_build = None
+    if client_build is not None:
+        return client_build(chats)
+    return {
+        "v1": [],
+        "v2": [
+            "describe",
+            "explain",
+            "get",
+            "find",
+            "set",
+            "order",
+            "enrich",
+            "project",
+            "traverse",
+            "pipeline",
+            "search",
+            "analyze",
+            "return",
+        ],
+    }
+
+
+async def run_agent(*args, **kwargs):
+    from zeus_client import run_agent as client_run_agent
+
+    return await client_run_agent(*args, **kwargs)
 
 LOCAL_PROMPT_PREFIX = (
     "Find local businesses that match these preferences in the yelp-demo knowledge graph. "
@@ -80,8 +117,52 @@ def _provider_id(provider: dict) -> str:
     return host.split(".")[0] if host else "default"
 
 
-def _structured_response_payload(structured: StructuredAgentResponse) -> dict:
-    return asdict(structured)
+def _structured_response_payload(structured) -> dict:
+    if is_dataclass(structured):
+        return asdict(structured)
+    return {
+        "answer": getattr(structured, "answer", ""),
+        "zeus_data": list(getattr(structured, "zeus_data", []) or []),
+        "warnings": list(getattr(structured, "warnings", []) or []),
+    }
+
+
+def _resolve_mode(cfg: dict) -> str:
+    """ZEUS_MODE from the environment, else config, else analytics."""
+    env_mode = env_text("ZEUS_MODE")
+    if env_mode:
+        return env_mode
+    default_mode = str(cfg.get("default_mode") or "").strip()
+    if default_mode and default_mode != "ZEUS_MODE":
+        return default_mode
+    settings = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
+    settings_mode = str(settings.get("mode") or "").strip()
+    if settings_mode and settings_mode != "ZEUS_MODE":
+        return settings_mode
+    return "analytics"
+
+
+def _llm_base_url(provider: dict, llm: dict) -> str:
+    base_url = env_text("LLM_BASE_URL")
+    if not base_url:
+        raw = str(llm.get("base_url") or provider.get("base_url") or "")
+        base_url = "" if raw == "LLM_BASE_URL" else raw
+    return base_url.rstrip("/")
+
+
+def _llm_model(provider: dict, llm: dict) -> str:
+    model = env_text("LLM_MODEL")
+    if model:
+        return model
+    raw = str(llm.get("model") or "").strip()
+    if raw and raw != "LLM_MODEL":
+        return raw
+    models = provider.get("models") or []
+    if models:
+        picked = str(models[0]).strip()
+        if picked and picked != "LLM_MODEL":
+            return picked
+    return "grok-4.5-latest"
 
 
 def _message_text(turn: dict) -> str:
@@ -178,22 +259,29 @@ async def _search_async(
 ) -> dict:
     cfg = await load_config()
     zcfg = resolve_zeus_config(cfg)
-    zeus_url = (zcfg.get("url") or "").rstrip("/")
+    zeus_url = (env_text("ZEUS_URL") or str(zcfg.get("url") or "")).rstrip("/")
     zeus_connection = zcfg.get("name") or "default"
     if not zeus_url:
-        raise ValueError("no Zeus URL configured (edit config.json)")
+        raise ValueError("no Zeus URL configured (set ZEUS_URL)")
 
-    provider = resolve_llm_provider_config(cfg)
-    base_url = (provider.get("base_url") or "").rstrip("/")
-    api_key = provider.get("api_key") or ""
-    provider_id = _provider_id(provider)
+    provider = resolve_llm_provider_config(cfg) or {}
+    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+    base_url = _llm_base_url(provider, llm)
+    # Never pass llm_provider.api_key. The value is LLM_API_KEY from the environment.
+    api_key = env_text("LLM_API_KEY")
     if not api_key:
-        raise ValueError("llm_provider has no api_key set (edit config.json)")
-    model = (provider.get("models") or ["gpt-4o"])[0]
+        raise ValueError("LLM_API_KEY is not set (set it in .env, not config.json)")
+    provider_id = _provider_id(
+        {
+            "label": provider.get("label") or llm.get("label") or llm.get("provider"),
+            "base_url": base_url,
+        }
+    )
+    model = _llm_model(provider, llm)
 
     api_version = normalize_api_version(cfg.get("default_api_version", "v2"))
     # Product default is analytics (base-6.1); older configs may still say "auto"/"open".
-    mode = (cfg.get("default_mode") or "analytics").strip() or "analytics"
+    mode = _resolve_mode(cfg)
     base_id = (cfg.get("default_base_id") or "").strip() or None
     raw_base_dirs = cfg.get("base_catalog_dirs") or []
     base_catalog_dirs: list[Path] | None = None
@@ -202,7 +290,10 @@ async def _search_async(
         if not base_catalog_dirs:
             base_catalog_dirs = None
     sample = cfg.get("default_sample", "yelp-demo")
-    triple = cfg.get("samples", {}).get(sample, {})
+    samples = cfg.get("samples") if isinstance(cfg.get("samples"), dict) else {}
+    triple = samples.get(sample) if isinstance(samples.get(sample), dict) else {}
+    if not triple and isinstance(cfg.get("target"), dict):
+        triple = cfg["target"]
     bucket = triple.get("bucket", sample)
     scope = triple.get("scope", "_default")
     collection = triple.get("collection", "_default")
@@ -262,6 +353,7 @@ async def _search_async(
             settings=settings,
             base_id=base_id,
             base_catalog_dirs=base_catalog_dirs,
+            api_key_env="LLM_API_KEY",
         )
 
         CHATS[chat_id]["turns"] = new_turns
