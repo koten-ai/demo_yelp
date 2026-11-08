@@ -80,6 +80,8 @@ COPY demo_yelp/data ./data
 # Secret-free config is baked in. Do not copy .env; Compose bind-mounts it.
 COPY demo_yelp/config.json ./
 
+# Sibling checkout is zeus_client 2.x. CHEAP_FINAL_STATIC_ANSWER lives in
+# application.agent_turn. The 0.3 module zeus_client.agent.tool_round is not installed.
 RUN pip install --no-cache-dir -e /opt/zeus_client_python \
     && pip install --no-cache-dir \
         "fastapi==0.115.6" \
@@ -88,7 +90,7 @@ RUN pip install --no-cache-dir -e /opt/zeus_client_python \
         "python-multipart==0.0.20" \
         "python-dotenv==1.2.2" \
     && pip install --no-cache-dir --no-deps -e . \
-    && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client')); from zeus_client.agent.tool_round import CHEAP_FINAL_STATIC_ANSWER" \
+    && python -c "from importlib.metadata import version; print('kotenai-zeus-client=' + version('kotenai-zeus-client')); from zeus_client import ClientSettings; from zeus_client.application.agent_turn import CHEAP_FINAL_STATIC_ANSWER" \
     && test -d /opt/zeus_client_python/src
 
 ENV PORT=5000
