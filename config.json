@@ -49,11 +49,9 @@
     "modes": ["analytics", "auto"],
     "on_startup": true
   },
-  "default_api_version": "v2",
   "default_mode": "analytics",
   "default_base_id": "base-6.1",
   "base_catalog_dirs": ["/app/base_catalogs"],
-  "default_sample": "yelp-demo",
   "samples": {
     "yelp-demo": {
       "bucket": "yelp-demo",
@@ -64,9 +62,5 @@
   "couchbase": {
     "query_url": "http://host.docker.internal:8093",
     "username": "Administrator"
-  },
-  "ui": {
-    "corpus_label": "businesses",
-    "business_count": null
   }
 }
