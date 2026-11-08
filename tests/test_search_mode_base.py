@@ -78,12 +78,6 @@ def _install_search_fakes(monkeypatch, search_mod, cfg: dict) -> dict:
     monkeypatch.setattr(search_mod, "load_config", fake_load_config)
     monkeypatch.setattr(search_mod, "run_agent", fake_run_agent)
     monkeypatch.setattr(search_mod, "persist_chat", AsyncMock())
-    monkeypatch.setattr(search_mod, "resolve_zeus_config", lambda raw: raw["zeus"])
-    monkeypatch.setattr(
-        search_mod,
-        "resolve_llm_provider_config",
-        lambda raw: raw["llm_provider"],
-    )
     monkeypatch.setattr(search_mod, "build_tool_order", lambda _chats: {"v1": [], "v2": []})
     monkeypatch.setattr(search_mod, "zeus_data_to_results", lambda _d: [])
     monkeypatch.setattr(search_mod, "extract_businesses", lambda _t: [])

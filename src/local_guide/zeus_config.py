@@ -1,10 +1,9 @@
 """Configure kotenai-zeus-client paths and the beer-sample env contract."""
 from __future__ import annotations
 
+import importlib
 import json
 import os
-import tempfile
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -26,9 +25,28 @@ _CLIENT_ENV_PAIRS = (
 
 _AUTH_MODES = frozenset({"none", "basic", "bearer", "session", "certificate", "pat", "m2m"})
 
+_cached: dict | None = None
+_cache_token: tuple | None = None
+
 
 def env_text(name: str) -> str:
     return (os.environ.get(name) or "").strip()
+
+
+def client_symbol(name: str, *, module: str = "zeus_client"):
+    """Return a zeus_client attribute, or None when this build does not export it.
+
+    zeus_client 2.x raises AttributeError from ``__getattr__`` for unknown names.
+    That is not an ImportError.
+    """
+    try:
+        mod = importlib.import_module(module)
+    except ImportError:
+        return None
+    try:
+        return getattr(mod, name)
+    except AttributeError:
+        return None
 
 
 def _overlay_client_env() -> None:
@@ -56,11 +74,7 @@ def configure_zeus_client() -> None:
 
 
 def resolve_auth_mode(raw: str | None) -> str:
-    """Resolve a beer auth sentinel.
-
-    The client keeps the file auth_mode whenever ZEUS_URL is set, so callers
-    write the value returned here into a temporary config first.
-    """
+    """Resolve a beer auth sentinel to a real mode."""
     auth = (raw or "").strip()
     if auth not in _AUTH_MODES:
         auth = env_text(auth) or env_text("ZEUS_AUTH_MODE") or "basic"
@@ -72,27 +86,122 @@ def resolve_auth_mode(raw: str | None) -> str:
     return auth if auth in _AUTH_MODES else "basic"
 
 
-def resolve_zeus_config(cfg: dict) -> dict:
-    """Return Zeus connection settings. ZEUS_URL overrides the file URL."""
-    zeus = cfg.get("zeus")
-    if not isinstance(zeus, dict) or not zeus:
+def _llm_base_url(llm: dict, provider: dict) -> str:
+    base_url = env_text("LLM_BASE_URL")
+    if not base_url:
+        raw = str(llm.get("base_url") or provider.get("base_url") or "")
+        base_url = "" if raw == "LLM_BASE_URL" else raw
+    return (base_url or "https://api.x.ai/v1").rstrip("/")
+
+
+def _llm_model(llm: dict, provider: dict) -> str:
+    model = env_text("LLM_MODEL")
+    if model:
+        return model
+    raw = str(llm.get("model") or "").strip()
+    if raw and raw != "LLM_MODEL":
+        return raw
+    models = provider.get("models") or []
+    if models:
+        picked = str(models[0]).strip()
+        if picked and picked != "LLM_MODEL":
+            return picked
+    return "grok-4.5-latest"
+
+
+def _mode(data: dict, settings: dict) -> str:
+    env_mode = env_text("ZEUS_MODE")
+    if env_mode:
+        return env_mode
+    raw = str(settings.get("mode") or data.get("default_mode") or "").strip()
+    if raw and raw != "ZEUS_MODE":
+        return raw
+    return "analytics"
+
+
+def _drop_secret_fields(block: dict) -> None:
+    block.pop("password", None)
+    block.pop("api_key", None)
+    block.pop("bearer_token", None)
+
+
+def resolve_document(raw: dict) -> dict:
+    """Return a copy of config with sentinels replaced and inline secrets removed.
+
+    The committed file keeps names (``ZEUS_AUTH_MODE``, ``LLM_API_KEY``). Callers
+    read this object. Nothing writes a temp file or points the client at one.
+    """
+    if not isinstance(raw, dict):
         return {}
-    resolved = dict(zeus)
-    url = env_text("ZEUS_URL")
+    data = json.loads(json.dumps(raw))
+    zeus = data.get("zeus") if isinstance(data.get("zeus"), dict) else {}
+    settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
+    llm = data.get("llm") if isinstance(data.get("llm"), dict) else {}
+    provider = data.get("llm_provider") if isinstance(data.get("llm_provider"), dict) else {}
+
+    url = env_text("ZEUS_URL") or str(zeus.get("url") or "")
+    if url == "ZEUS_URL":
+        url = ""
     if url:
-        resolved["url"] = url
-    return resolved
+        zeus["url"] = url.rstrip("/")
+    zeus["auth_mode"] = resolve_auth_mode(str(zeus.get("auth_mode") or ""))
+    username = env_text("ZEUS_USERNAME") or str(zeus.get("username") or "")
+    if username == "ZEUS_USERNAME":
+        username = "demo_1"
+    if username:
+        zeus["username"] = username
+    _drop_secret_fields(zeus)
+    creds = zeus.get("scope_credentials")
+    if isinstance(creds, dict):
+        for entry in creds.values():
+            if isinstance(entry, dict):
+                entry.pop("password", None)
+                entry.pop("bearer_token", None)
+
+    mode = _mode(data, settings)
+    settings["mode"] = mode
+    if str(data.get("default_mode") or "") in {"", "ZEUS_MODE"}:
+        data["default_mode"] = mode
+
+    llm["base_url"] = _llm_base_url(llm, provider)
+    llm["model"] = _llm_model(llm, provider)
+    llm["api_key_env"] = str(llm.get("api_key_env") or provider.get("api_key_env") or "LLM_API_KEY")
+    if not llm.get("provider"):
+        llm["provider"] = str(provider.get("label") or "xai")
+    _drop_secret_fields(llm)
+    _drop_secret_fields(provider)
+    if provider:
+        provider["base_url"] = llm["base_url"]
+        data["llm_provider"] = provider
+
+    target = data.get("target") if isinstance(data.get("target"), dict) else {}
+    if env_text("ZEUS_BUCKET"):
+        target["bucket"] = env_text("ZEUS_BUCKET")
+    if env_text("ZEUS_SCOPE"):
+        target["scope"] = env_text("ZEUS_SCOPE")
+    if env_text("ZEUS_COLLECTION"):
+        target["collection"] = env_text("ZEUS_COLLECTION")
+    if target:
+        data["target"] = target
+
+    data["zeus"] = zeus
+    data["settings"] = settings
+    data["llm"] = llm
+    return data
+
+
+def resolve_zeus_config(cfg: dict) -> dict:
+    """Return Zeus connection settings from an already resolved document."""
+    resolved = resolve_document(cfg)
+    zeus = resolved.get("zeus")
+    return dict(zeus) if isinstance(zeus, dict) else {}
 
 
 def resolve_llm_provider_config(cfg: dict) -> dict:
-    """Return the LLM block. Beer shape uses ``llm``; older files use ``llm_provider``."""
-    llm_provider = cfg.get("llm_provider")
-    if isinstance(llm_provider, dict) and llm_provider:
-        return dict(llm_provider)
-    llm = cfg.get("llm")
-    if isinstance(llm, dict) and llm:
-        return dict(llm)
-    return {}
+    """Return the resolved LLM block. Beer shape uses ``llm``."""
+    resolved = resolve_document(cfg)
+    llm = resolved.get("llm")
+    return dict(llm) if isinstance(llm, dict) else {}
 
 
 def _read_config() -> dict:
@@ -103,76 +212,31 @@ def _read_config() -> dict:
     return data
 
 
-def materialize_client_config() -> Path:
-    """Write a temp config with a real auth_mode when ZEUS_URL is set.
-
-    config.json stores ZEUS_AUTH_MODE. The client rejects that sentinel and
-    keeps the file auth_mode whenever ZEUS_URL is set, same as beer-sample.
-    """
-    source = PROJECT_ROOT / "config.json"
-    if not env_text("ZEUS_URL"):
-        return source
-    data = _read_config()
-    zeus = data.setdefault("zeus", {})
-    settings = data.setdefault("settings", {})
-    if not isinstance(zeus, dict):
-        zeus = {}
-        data["zeus"] = zeus
-    if not isinstance(settings, dict):
-        settings = {}
-        data["settings"] = settings
-    zeus["auth_mode"] = resolve_auth_mode(str(zeus.get("auth_mode") or ""))
-    if str(zeus.get("username") or "") == "ZEUS_USERNAME":
-        zeus["username"] = env_text("ZEUS_USERNAME") or "demo_1"
-    if str(settings.get("mode") or "") == "ZEUS_MODE":
-        settings["mode"] = env_text("ZEUS_MODE") or "analytics"
-    directory = Path(tempfile.mkdtemp(prefix="yelp-config-"))
-    path = directory / "config.json"
-    path.write_text(json.dumps(data), encoding="utf-8")
-    return path
-
-
-def _bind_legacy_config_path(path: Path) -> None:
-    """Point a v1 loader at the materialized file before it reads config.json."""
-    try:
-        import zeus_client.constants as constants
-    except ImportError:
-        return
-    constants.CONFIG_PATH = path
-    constants.USER_CONFIG_DIR = path.parent
-    constants.EXAMPLE_CONFIG_PATH = path.parent / "config.example.json"
-
-
-def _client_symbol(name: str):
-    try:
-        import zeus_client
-    except ImportError:
-        return None
-    try:
-        return getattr(zeus_client, name)
-    except AttributeError:
-        return None
+def _cache_token() -> tuple:
+    path = PROJECT_ROOT / "config.json"
+    mtime = path.stat().st_mtime_ns if path.is_file() else 0
+    return (
+        str(PROJECT_ROOT),
+        mtime,
+        env_text("ZEUS_URL"),
+        env_text("ZEUS_AUTH_MODE"),
+        env_text("ZEUS_USERNAME"),
+        env_text("ZEUS_MODE"),
+        env_text("LLM_BASE_URL"),
+        env_text("LLM_MODEL"),
+        env_text("ZEUS_BUCKET"),
+        env_text("ZEUS_SCOPE"),
+        env_text("ZEUS_COLLECTION"),
+    )
 
 
 async def load_config() -> dict:
-    """Resolve sentinels, then let zeus_client.load_config read that file."""
-    path = materialize_client_config()
-    temp = path.resolve() != (PROJECT_ROOT / "config.json").resolve()
-    try:
-        _bind_legacy_config_path(path)
-        client_load = _client_symbol("load_config")
-        if client_load is not None:
-            loaded = client_load()
-            if hasattr(loaded, "__await__"):
-                loaded = await loaded
-            if isinstance(loaded, dict):
-                return loaded
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    finally:
-        if temp:
-            path.unlink(missing_ok=True)
-            try:
-                path.parent.rmdir()
-            except OSError:
-                pass
+    """Resolve config.json once per process for the current env and file."""
+    global _cached, _cache_token
+    token = _cache_token()
+    if _cached is not None and token == _cache_token:
+        return _cached
+    resolved = resolve_document(_read_config())
+    _cached = resolved
+    _cache_token = token
+    return resolved

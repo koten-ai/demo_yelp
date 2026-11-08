@@ -396,18 +396,13 @@ async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
                 password="password",
             )
 
-    import zeus_client
-    import zeus_client.zeus.suggest as suggest_mod
+    import local_guide.detail as detail_mod
 
-    monkeypatch.setattr(zeus_client, "load_config", fake_load_config)
-    monkeypatch.setattr(zeus_client, "run_verb_from_config", fake_run_verb_from_config)
-    monkeypatch.setattr(
-        zeus_client,
-        "resolve_zeus_config",
-        lambda cfg: cfg.get("zeus") or {},
-    )
-    monkeypatch.setattr(zeus_client, "CouchbaseQueryConfig", FakeCB)
-    monkeypatch.setattr(suggest_mod, "n1ql_hydrate_keys", fake_n1ql)
+    monkeypatch.setattr(detail_mod, "load_config", fake_load_config)
+    monkeypatch.setattr(detail_mod, "run_verb_from_config", fake_run_verb_from_config)
+    monkeypatch.setattr(detail_mod, "resolve_zeus_config", lambda cfg: cfg.get("zeus") or {})
+    monkeypatch.setattr(detail_mod, "CouchbaseQueryConfig", FakeCB)
+    monkeypatch.setattr(detail_mod, "n1ql_hydrate_keys", fake_n1ql)
 
     out = await fetch_business_via_find("biz:-4dYswJy7SPcbcERvitmIg")
     assert calls and calls[0][0] == "find"
@@ -512,18 +507,13 @@ async def test_fetch_business_reviews_uses_find_verb(monkeypatch):
                 password="password",
             )
 
-    import zeus_client
-    import zeus_client.zeus.suggest as suggest_mod
+    import local_guide.detail as detail_mod
 
-    monkeypatch.setattr(zeus_client, "load_config", fake_load_config)
-    monkeypatch.setattr(zeus_client, "run_verb_from_config", fake_run_verb_from_config)
-    monkeypatch.setattr(
-        zeus_client,
-        "resolve_zeus_config",
-        lambda cfg: cfg.get("zeus") or {},
-    )
-    monkeypatch.setattr(zeus_client, "CouchbaseQueryConfig", FakeCB)
-    monkeypatch.setattr(suggest_mod, "n1ql_hydrate_keys", fake_n1ql)
+    monkeypatch.setattr(detail_mod, "load_config", fake_load_config)
+    monkeypatch.setattr(detail_mod, "run_verb_from_config", fake_run_verb_from_config)
+    monkeypatch.setattr(detail_mod, "resolve_zeus_config", lambda cfg: cfg.get("zeus") or {})
+    monkeypatch.setattr(detail_mod, "CouchbaseQueryConfig", FakeCB)
+    monkeypatch.setattr(detail_mod, "n1ql_hydrate_keys", fake_n1ql)
 
     out = await fetch_business_reviews("biz:bdth7r1brx9yRU7sYwF9jQ", limit=5)
     assert calls and calls[0][0] == "find"

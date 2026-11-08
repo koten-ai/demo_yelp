@@ -42,7 +42,7 @@ def test_committed_config_has_no_secret_fields() -> None:
     assert "password" not in creds
     assert config["zeus"]["scope_contracts"]["yelp-demo/_default"]["analytics"]["contract_id"]
     assert config["settings"]["mode"] == "ZEUS_MODE"
-    assert config["settings"]["durable_sessions"] is True
+    assert config["zeus"]["enable_durable_sessions"] is True
     assert config["llm"]["base_url"] == "LLM_BASE_URL"
     assert config["llm"]["model"] == "LLM_MODEL"
     assert config["llm"]["api_key_env"] == "LLM_API_KEY"
@@ -165,52 +165,73 @@ def test_zeus_url_writes_real_auth_mode_before_load(tmp_path, monkeypatch) -> No
     monkeypatch.setenv("ZEUS_USERNAME", "demo_1")
     monkeypatch.setenv("ZEUS_MODE", "analytics")
 
-    from local_guide.zeus_config import materialize_client_config
+    from local_guide.zeus_config import resolve_document
 
-    path = materialize_client_config()
-    assert path != tmp_path / "config.json"
-    written = json.loads(path.read_text(encoding="utf-8"))
+    written = resolve_document(body)
     assert written["zeus"]["auth_mode"] == "basic"
     assert written["zeus"]["username"] == "demo_1"
+    assert written["zeus"]["url"] == "http://preset.example:8080"
     assert written["settings"]["mode"] == "analytics"
     assert written["llm"]["api_key_env"] == "LLM_API_KEY"
     assert written["zeus"]["password_env"] == "ZEUS_PASSWORD"
+    assert "api_key" not in written["llm"]
 
 
-def test_live_search_does_not_copy_json_key_or_hardcode_none(monkeypatch) -> None:
-    from local_guide.live_search import _ensure_llm_key, _runtime_config
+def test_sentinels_resolve_when_zeus_url_is_unset(monkeypatch) -> None:
+    from local_guide.zeus_config import resolve_document
+
+    monkeypatch.delenv("ZEUS_URL", raising=False)
+    monkeypatch.setenv("ZEUS_AUTH_MODE", "basic")
+    monkeypatch.setenv("ZEUS_MODE", "analytics")
+    written = resolve_document(
+        {
+            "zeus": {
+                "url": "http://localhost:8080",
+                "auth_mode": "ZEUS_AUTH_MODE",
+                "password": "inline-secret",
+            },
+            "settings": {"mode": "ZEUS_MODE"},
+            "llm": {"base_url": "LLM_BASE_URL", "model": "LLM_MODEL", "api_key": "inline-secret"},
+        }
+    )
+    assert written["zeus"]["url"] == "http://localhost:8080"
+    assert written["zeus"]["auth_mode"] == "basic"
+    assert "password" not in written["zeus"]
+    assert "api_key" not in written["llm"]
+    assert written["settings"]["mode"] == "analytics"
+
+
+def test_resolved_document_ignores_inline_llm_key(monkeypatch) -> None:
+    from local_guide.zeus_config import resolve_document
 
     monkeypatch.delenv("LLM_API_KEY", raising=False)
-    monkeypatch.delenv("XAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    cfg = {
-        "zeus": {"url": "http://127.0.0.1:8080", "auth_mode": "ZEUS_AUTH_MODE"},
-        "llm": {
-            "base_url": "LLM_BASE_URL",
-            "model": "LLM_MODEL",
-            "api_key_env": "LLM_API_KEY",
-            "api_key": "inline-secret",
-        },
-        "llm_provider": {"api_key": "inline-secret", "models": ["nope"]},
-        "settings": {"mode": "ZEUS_MODE", "durable_sessions": True},
-    }
-    with pytest.raises(ValueError, match="LLM_API_KEY"):
-        _ensure_llm_key(cfg)
-    assert os.environ.get("LLM_API_KEY", "") == ""
-
     monkeypatch.setenv("ZEUS_URL", "http://zeus.example:8080")
     monkeypatch.setenv("ZEUS_AUTH_MODE", "basic")
     monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
     monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
     monkeypatch.setenv("ZEUS_MODE", "analytics")
-    runtime = _runtime_config(cfg)
-    assert runtime.zeus.url == "http://zeus.example:8080"
-    assert runtime.zeus.auth_mode == "basic"
-    assert runtime.zeus.auth_mode != "none"
-    assert runtime.llm.api_key_env == "LLM_API_KEY"
-    assert runtime.llm.model == "grok-4.5-latest"
-    assert runtime.llm.base_url == "https://api.x.ai/v1"
-    assert runtime.settings.mode == "analytics"
+    written = resolve_document(
+        {
+            "zeus": {"url": "http://127.0.0.1:8080", "auth_mode": "ZEUS_AUTH_MODE"},
+            "llm": {
+                "base_url": "LLM_BASE_URL",
+                "model": "LLM_MODEL",
+                "api_key_env": "LLM_API_KEY",
+                "api_key": "inline-secret",
+            },
+            "llm_provider": {"api_key": "inline-secret", "models": ["nope"]},
+            "settings": {"mode": "ZEUS_MODE", "durable_sessions": True},
+        }
+    )
+    assert os.environ.get("LLM_API_KEY", "") == ""
+    assert written["zeus"]["url"] == "http://zeus.example:8080"
+    assert written["zeus"]["auth_mode"] == "basic"
+    assert written["llm"]["api_key_env"] == "LLM_API_KEY"
+    assert written["llm"]["model"] == "grok-4.5-latest"
+    assert written["llm"]["base_url"] == "https://api.x.ai/v1"
+    assert "api_key" not in written["llm"]
+    assert "api_key" not in written["llm_provider"]
+    assert written["settings"]["mode"] == "analytics"
 
 
 def test_couchbase_from_mapping_prefers_env(monkeypatch) -> None:
@@ -238,9 +259,27 @@ def test_suggest_returns_without_llm_key(monkeypatch, client) -> None:
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    seen = {"called": False}
+
+    class _Result:
+        def to_dict(self):
+            return {
+                "query": "pi",
+                "results": [{"name": "Pizza Place", "business_id": "biz:1"}],
+                "source": "zeus_fts",
+            }
+
+    async def fake_run(*_args, **_kwargs):
+        seen["called"] = True
+        assert os.environ.get("LLM_API_KEY", "") == ""
+        return _Result()
+
+    monkeypatch.setattr("local_guide.suggest.run_search_from_config", fake_run)
     short = client.get("/api/suggest", params={"q": "s"})
     assert short.status_code == 200
     assert short.json()["results"] == []
+    assert seen["called"] is False
     longer = client.get("/api/suggest", params={"q": "pi"})
     assert longer.status_code == 200
-    assert "results" in longer.json()
+    assert seen["called"] is True
+    assert longer.json()["results"][0]["name"] == "Pizza Place"

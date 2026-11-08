@@ -1,45 +1,18 @@
 """Business detail + AI review insight helpers."""
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from typing import Any
 
 from local_guide.chat_store import CHATS
 from local_guide.search import run_search
+from local_guide.zeus_config import client_symbol, load_config, resolve_zeus_config
 
-
-def _install_legacy_suggest_module() -> None:
-    """Keep zeus_client.zeus.suggest importable when this client dropped it.
-
-    Detail still hydrates with n1ql_hydrate_keys. Tests patch that function on
-    the v1 module, which 2.5 no longer ships.
-    """
-    import sys
-    import types
-
-    if "zeus_client.zeus.suggest" in sys.modules:
-        return
-    try:
-        import zeus_client.zeus.suggest  # noqa: F401
-        return
-    except ImportError:
-        pass
-    zeus_pkg = sys.modules.get("zeus_client.zeus")
-    if zeus_pkg is None:
-        zeus_pkg = types.ModuleType("zeus_client.zeus")
-        sys.modules["zeus_client.zeus"] = zeus_pkg
-    suggest_mod = types.ModuleType("zeus_client.zeus.suggest")
-
-    async def n1ql_hydrate_keys(*_args, **_kwargs):
-        raise RuntimeError("n1ql hydrate is not available in this zeus_client build")
-
-    suggest_mod.n1ql_hydrate_keys = n1ql_hydrate_keys
-    zeus_pkg.suggest = suggest_mod
-    sys.modules["zeus_client.zeus.suggest"] = suggest_mod
-
-
-_install_legacy_suggest_module()
+logger = logging.getLogger("local_guide.detail")
+run_verb_from_config = client_symbol("run_verb_from_config")
+n1ql_hydrate_keys = client_symbol("n1ql_hydrate_keys", module="zeus_client.zeus.suggest")
 
 
 class CouchbaseQueryConfig:
@@ -82,77 +55,6 @@ class CouchbaseQueryConfig:
             password = mapping.get("password", "")
         return cls(query_url=query_url.rstrip("/"), username=username, password=str(password))
 
-
-# Names planted only so pytest monkeypatch.setattr can replace them.
-_CLIENT_PLACEHOLDERS: dict[str, object] = {}
-
-
-def _install_client_patch_points() -> None:
-    """Plant missing v1 names so tests can monkeypatch.setattr them.
-
-    pytest refuses setattr when the attribute is absent, and this client build
-    no longer exports load_config or CouchbaseQueryConfig.
-    """
-    import zeus_client
-
-    async def _unavailable(*_args, **_kwargs):
-        raise RuntimeError("zeus_client v1 helper is not available")
-
-    def _missing_resolve(cfg):
-        return {}
-
-    defaults = {
-        "load_config": _unavailable,
-        "run_verb_from_config": _unavailable,
-        "resolve_zeus_config": _missing_resolve,
-        "CouchbaseQueryConfig": CouchbaseQueryConfig,
-    }
-    for name, value in defaults.items():
-        try:
-            getattr(zeus_client, name)
-        except AttributeError:
-            setattr(zeus_client, name, value)
-            _CLIENT_PLACEHOLDERS[name] = value
-
-
-_install_client_patch_points()
-
-
-def _load_detail_clients():
-    """Prefer a patched zeus_client symbol; otherwise the local fallback."""
-    import logging
-
-    import zeus_client
-
-    logger = logging.getLogger("local_guide.detail")
-
-    def attr(name: str):
-        try:
-            found = getattr(zeus_client, name)
-        except AttributeError:
-            return None
-        if found is _CLIENT_PLACEHOLDERS.get(name):
-            return None
-        return found
-
-    load_config = attr("load_config")
-    if load_config is None:
-        from local_guide.zeus_config import load_config as load_config
-    resolve_zeus_config = attr("resolve_zeus_config")
-    if resolve_zeus_config is None:
-        from local_guide.zeus_config import resolve_zeus_config as resolve_zeus_config
-    query_config = attr("CouchbaseQueryConfig") or CouchbaseQueryConfig
-    run_verb_from_config = attr("run_verb_from_config")
-    from zeus_client.zeus.suggest import n1ql_hydrate_keys
-
-    return (
-        logger,
-        load_config,
-        resolve_zeus_config,
-        query_config,
-        run_verb_from_config,
-        n1ql_hydrate_keys,
-    )
 
 _GOOD_BAD = re.compile(
     r"(?is)\*\*\s*(the\s+good|good|pros)\s*\*\*\s*:?\s*(.+?)(?=\*\*\s*(the\s+bad|bad|cons|best)|$)"
@@ -593,15 +495,6 @@ async def fetch_business_reviews(
     N1QL ``USE KEYS`` (same helper as fast-tier suggest). Falls back to
     ``project`` on find node ids when N1QL is unavailable.
     """
-    (
-        logger,
-        load_config,
-        resolve_zeus_config,
-        CouchbaseQueryConfig,
-        run_verb_from_config,
-        n1ql_hydrate_keys,
-    ) = _load_detail_clients()
-
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
     lim = max(1, min(int(limit or DEFAULT_REVIEW_LIMIT), MAX_REVIEW_LIMIT))
@@ -612,6 +505,15 @@ async def fetch_business_reviews(
             "count": 0,
             "source": "none",
             "error": "empty business_id",
+            "ai_process_result": False,
+        }
+    if run_verb_from_config is None:
+        return {
+            "business_id": bare,
+            "reviews": [],
+            "count": 0,
+            "source": "error",
+            "error": "zeus_client.run_verb_from_config is not available",
             "ai_process_result": False,
         }
 
@@ -666,7 +568,7 @@ async def fetch_business_reviews(
         allow_host_default=False,
     )
 
-    if doc_keys and cb is not None:
+    if doc_keys and cb is not None and n1ql_hydrate_keys is not None:
         try:
             rows = await n1ql_hydrate_keys(
                 cb,
@@ -701,7 +603,7 @@ async def fetch_business_reviews(
     user_keys = _user_lookup_keys(
         [_str_field(r.get("user_id")) for r in rows if isinstance(r, dict)]
     )
-    if user_keys and cb is not None:
+    if user_keys and cb is not None and n1ql_hydrate_keys is not None:
         try:
             user_rows = await n1ql_hydrate_keys(
                 cb,
@@ -850,15 +752,6 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     ``config.couchbase`` is set; else ``project`` on find node ids. Soft-fails
     with a minimal card when possible.
     """
-    (
-        logger,
-        load_config,
-        resolve_zeus_config,
-        CouchbaseQueryConfig,
-        run_verb_from_config,
-        n1ql_hydrate_keys,
-    ) = _load_detail_clients()
-
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
     if not bare:
@@ -867,6 +760,15 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
             "business_id": raw_id,
             "source": "none",
             "error": "empty business_id",
+            "ai_process_result": False,
+            "chat_id": None,
+        }
+    if run_verb_from_config is None:
+        return {
+            "business": None,
+            "business_id": bare,
+            "source": "error",
+            "error": "zeus_client.run_verb_from_config is not available",
             "ai_process_result": False,
             "chat_id": None,
         }
@@ -939,7 +841,7 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     keys_for_n1ql = [k for k in doc_keys if k.startswith("biz:")] or (
         [prefer_key] if prefer_key.startswith("biz:") else []
     )
-    if keys_for_n1ql and cb is not None:
+    if keys_for_n1ql and cb is not None and n1ql_hydrate_keys is not None:
         try:
             rows = await n1ql_hydrate_keys(
                 cb,

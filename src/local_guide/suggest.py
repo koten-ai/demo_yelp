@@ -6,19 +6,16 @@ from typing import Any
 
 from zeus_client import SuggestOptions
 
-from local_guide.zeus_config import load_config
+from local_guide.zeus_config import client_symbol, load_config
 
 logger = logging.getLogger("local_guide.suggest")
 
 
 async def run_search_from_config(*args, **kwargs):
     """No-LLM typeahead. Suggest never reads LLM_API_KEY."""
-    try:
-        from zeus_client import run_search_from_config as client_run
-    except ImportError:
-        client_run = None
+    client_run = client_symbol("run_search_from_config")
     if client_run is None:
-        raise RuntimeError("run_search_from_config is not available")
+        raise RuntimeError("zeus_client.run_search_from_config is not available")
     return await client_run(*args, **kwargs)
 
 DEFAULT_LIMIT = 8
@@ -121,9 +118,6 @@ async def run_suggest(query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, An
                 min_query_len=MIN_QUERY_LEN,
                 fts_timeout_ms=2000,
                 entity_type="Business",
-                use_fts=True,
-                use_find_name=True,
-                use_find_city=True,
                 use_n1ql_hydrate=True,
                 mode_header="analytics",
             ),
