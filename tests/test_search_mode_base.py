@@ -67,9 +67,11 @@ def _install_search_fakes(monkeypatch, search_mod, cfg: dict) -> dict:
         captured["api_key"] = args[3]
         captured["model"] = args[4]
         captured["mode"] = args[6] if len(args) > 6 else kwargs.get("mode")
+        captured["zcfg"] = args[1]
         captured["base_id"] = kwargs.get("base_id")
         captured["base_catalog_dirs"] = kwargs.get("base_catalog_dirs")
-        captured["api_key_env"] = kwargs.get("api_key_env")
+        captured["settings"] = kwargs.get("settings")
+        captured["kwargs"] = kwargs
         return "ok", {"notes": []}, [], {"session_id": "", "round": 0}, _fake_structured()
 
     async def fake_load_config():
@@ -105,7 +107,7 @@ async def test_search_passes_analytics_base_id(monkeypatch):
     assert captured["zeus_url"] == "http://from-env:8080"
     assert captured["base_url"] == "https://api.x.ai/v1"
     assert captured["model"] == "grok-4.5-latest"
-    assert captured["api_key_env"] == "LLM_API_KEY"
+    assert "api_key_env" not in captured["kwargs"]
     assert captured["api_key"] == os.environ["LLM_API_KEY"]
     assert captured["api_key"] != "inline-api-key-do-not-pass"
     assert out["mode"] == "analytics"
@@ -128,10 +130,61 @@ async def test_search_defaults_mode_analytics_when_missing(monkeypatch):
 
     assert captured["mode"] == "analytics"
     assert captured["base_id"] is None
-    assert captured["api_key_env"] == "LLM_API_KEY"
+    assert "api_key_env" not in captured["kwargs"]
     assert captured["api_key"] == "from-env-llm-key"
     assert captured["api_key"] != "inline-api-key-do-not-pass"
     assert captured["base_url"] == "https://api.x.ai/v1"
     assert captured["model"] == "grok-4.5-latest"
     assert out["mode"] == "analytics"
     assert out.get("base_id") is None
+
+
+@pytest.mark.asyncio
+async def test_search_gives_v1_the_env_secret_and_settings(monkeypatch):
+    from local_guide import search as search_mod
+
+    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
+    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
+    monkeypatch.setenv("ZEUS_AUTH_MODE", "basic")
+    monkeypatch.setenv("ZEUS_PASSWORD", "env-secret")
+    monkeypatch.setenv("ZEUS_MODE", "analytics")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
+    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
+    cfg = _sentinel_config(default_mode="analytics", base_id=None)
+    cfg["settings"] = {
+        "mode": "ZEUS_MODE",
+        "durable_sessions": False,
+        "max_rounds": 12,
+    }
+    captured = _install_search_fakes(monkeypatch, search_mod, cfg)
+
+    await search_mod._search_async("pizza", None, ai_process_result=False)
+
+    assert captured["zcfg"]["password"] == "env-secret"
+    assert captured["zcfg"]["enable_durable_sessions"] is False
+    assert "password" not in cfg["zeus"]
+    assert captured["settings"].max_rounds == 12
+    assert captured["settings"].ai_process_result is False
+    assert "api_key_env" not in captured["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_search_copies_bearer_token_for_v1(monkeypatch):
+    from local_guide import search as search_mod
+
+    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
+    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
+    monkeypatch.setenv("ZEUS_AUTH_MODE", "bearer")
+    monkeypatch.setenv("ZEUS_BEARER_TOKEN", "env-token")
+    monkeypatch.delenv("ZEUS_PASSWORD", raising=False)
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
+    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
+    cfg = _sentinel_config(default_mode=None, base_id=None)
+    captured = _install_search_fakes(monkeypatch, search_mod, cfg)
+
+    await search_mod._search_async("pizza", None)
+
+    assert captured["zcfg"]["auth_mode"] == "bearer"
+    assert captured["zcfg"]["bearer_token"] == "env-token"
+    assert "password" not in captured["zcfg"]
+    assert "bearer_token" not in cfg["zeus"]

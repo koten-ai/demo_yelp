@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from dataclasses import asdict, is_dataclass
@@ -23,6 +24,37 @@ _user_facing_answer = client_symbol("user_facing_answer")
 if _user_facing_answer is None:
     def _user_facing_answer(answer, *, ui_text=None, layer_summary=None):  # type: ignore[misc]
         return answer if isinstance(answer, str) else ("" if answer is None else str(answer))
+
+
+def _v1_zeus_config(zcfg: dict, settings_block: dict) -> dict:
+    """Zeus dict for v1 run_agent. Secrets stay in this copy, not in config.json.
+
+    v1 auth reads ``password`` and ``bearer_token``. The beer file stores only
+    ``password_env``. v1 sessions read ``enable_durable_sessions``.
+    """
+    out = dict(zcfg)
+    mode = str(out.get("auth_mode") or "").strip().lower()
+    if mode == "bearer":
+        token = os.environ.get("ZEUS_BEARER_TOKEN")
+        if token:
+            out["bearer_token"] = token
+    elif mode == "basic":
+        env_name = str(out.get("password_env") or "ZEUS_PASSWORD").strip() or "ZEUS_PASSWORD"
+        secret = os.environ.get(env_name)
+        if secret:
+            out["password"] = secret
+    if "durable_sessions" in settings_block:
+        out["enable_durable_sessions"] = bool(settings_block["durable_sessions"])
+    return out
+
+
+def _v1_client_settings(ai_process_result: bool, settings_block: dict) -> ClientSettings:
+    """ClientSettings fields v1 run_agent accepts. Request flag wins for insight."""
+    kwargs: dict = {"ai_process_result": bool(ai_process_result)}
+    raw_rounds = settings_block.get("max_rounds")
+    if raw_rounds is not None and str(raw_rounds).strip() != "":
+        kwargs["max_rounds"] = max(1, int(raw_rounds))
+    return ClientSettings(**kwargs)
 
 
 def normalize_api_version(value: object) -> str:
@@ -284,10 +316,10 @@ async def _search_async(
             CHATS[chat_id].pop("zeus_session_id", None)
             CHATS[chat_id]["zeus_round"] = 0
 
-        settings = ClientSettings(ai_process_result=bool(ai_process_result))
+        settings = _v1_client_settings(ai_process_result, settings_block)
         answer, trace, new_turns, session_meta, structured = await run_agent(
             zeus_url,
-            zcfg,
+            _v1_zeus_config(zcfg, settings_block),
             base_url,
             api_key,
             model,
@@ -308,7 +340,6 @@ async def _search_async(
             settings=settings,
             base_id=base_id,
             base_catalog_dirs=base_catalog_dirs,
-            api_key_env="LLM_API_KEY",
         )
 
         CHATS[chat_id]["turns"] = new_turns

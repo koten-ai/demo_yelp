@@ -197,13 +197,6 @@ def resolve_zeus_config(cfg: dict) -> dict:
     return dict(zeus) if isinstance(zeus, dict) else {}
 
 
-def resolve_llm_provider_config(cfg: dict) -> dict:
-    """Return the resolved LLM block. Beer shape uses ``llm``."""
-    resolved = resolve_document(cfg)
-    llm = resolved.get("llm")
-    return dict(llm) if isinstance(llm, dict) else {}
-
-
 def _read_config() -> dict:
     path = PROJECT_ROOT / "config.json"
     data = json.loads(path.read_text(encoding="utf-8"))
