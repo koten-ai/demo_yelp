@@ -33,28 +33,28 @@ def test_committed_config_has_no_secret_fields() -> None:
     config = json.loads(_text("config.json"))
     assert not (ROOT / "config.example.json").exists()
     _walk_no_secret_fields(config)
+    assert config["profile"] == "development"
     assert config["client_floor"] == "client-floor-6.1"
+    assert config["chat_requests_dir"] == "data/chat_requests"
     assert config["zeus"]["auth_mode"] == "ZEUS_AUTH_MODE"
+    assert config["zeus"]["username"] == "ZEUS_USERNAME"
     assert config["zeus"]["password_env"] == "ZEUS_PASSWORD"
-    assert config["zeus"]["username"] == "demo_1"
-    creds = config["zeus"]["scope_credentials"]["yelp-demo/_default"]
-    assert creds["password_env"] == "ZEUS_PASSWORD"
-    assert "password" not in creds
-    assert config["zeus"]["scope_contracts"]["yelp-demo/_default"]["analytics"]["contract_id"]
+    assert "scope_credentials" not in config["zeus"]
+    assert "password" not in config["zeus"]
     assert config["settings"]["mode"] == "ZEUS_MODE"
-    assert config["zeus"]["enable_durable_sessions"] is True
+    assert config["settings"]["durable_sessions"] is False
     assert config["llm"]["base_url"] == "LLM_BASE_URL"
     assert config["llm"]["model"] == "LLM_MODEL"
     assert config["llm"]["api_key_env"] == "LLM_API_KEY"
+    assert config["llm"]["timeout_s"] == 120
     assert config["session"]["semantic_cache"]["enabled"] is False
     assert config["target"] == {
         "bucket": "yelp-demo",
         "scope": "_default",
         "collection": "_default",
     }
-    assert config["default_base_id"] == "base-6.1"
-    assert config["base_catalog_dirs"] == ["/app/base_catalogs"]
-    assert config["chat_requests_sync"]["on_startup"] is True
+    assert "samples" not in config
+    assert "default_base_id" not in config
     ignored = subprocess.run(
         ["git", "check-ignore", "config.json"],
         cwd=ROOT,

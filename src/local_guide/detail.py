@@ -476,7 +476,9 @@ def _sample_triple(cfg: dict[str, Any]) -> tuple[str, str, str]:
     triple = (cfg.get("samples") or {}).get(sample_name) or {}
     if not triple and isinstance(cfg.get("samples"), dict) and cfg["samples"]:
         triple = next(iter(cfg["samples"].values()))
-    bucket = str(triple.get("bucket") or sample_name or "")
+    if not triple and isinstance(cfg.get("target"), dict):
+        triple = cfg["target"]
+    bucket = str(triple.get("bucket") or sample_name or "yelp-demo")
     scope = str(triple.get("scope") or "_default")
     collection = str(triple.get("collection") or "_default")
     return bucket, scope, collection

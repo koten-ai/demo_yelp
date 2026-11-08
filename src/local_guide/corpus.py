@@ -74,6 +74,9 @@ def _default_sample(cfg: dict[str, Any]) -> dict[str, Any]:
         first = next(iter(samples.values()))
         if isinstance(first, dict):
             return first
+    target = cfg.get("target")
+    if isinstance(target, dict):
+        return target
     return {"bucket": "yelp-demo", "scope": "_default", "collection": "_default"}
 
 

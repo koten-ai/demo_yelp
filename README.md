@@ -139,7 +139,7 @@ demo_yelp/
 
 There is no chat-trace panel in the SPA. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The vendored `zeus_client_chat_trace.js` bundle is not in `src/local_guide/static/`.
 
-`config.json` is committed and secret-free. Copy `.env.example` to `.env`, then set `LLM_API_KEY` and `ZEUS_PASSWORD`. Do not put the API key or the Zeus password in `config.json`. The file stores env **names** (`zeus.password_env` = `ZEUS_PASSWORD`, `llm.api_key_env` = `LLM_API_KEY`) and sentinels (`zeus.auth_mode` = `ZEUS_AUTH_MODE`, `settings.mode` = `ZEUS_MODE`, `llm.base_url` = `LLM_BASE_URL`, `llm.model` = `LLM_MODEL`). Scope credentials use `password_env`, not `password`.
+`config.json` is committed and secret-free. Copy `.env.example` to `.env`, then set `LLM_API_KEY` and `ZEUS_PASSWORD`. Do not put the API key or the Zeus password in `config.json`. The file stores env **names** (`zeus.password_env` = `ZEUS_PASSWORD`, `llm.api_key_env` = `LLM_API_KEY`) and sentinels (`zeus.auth_mode` = `ZEUS_AUTH_MODE`, `zeus.username` = `ZEUS_USERNAME`, `settings.mode` = `ZEUS_MODE`, `llm.base_url` = `LLM_BASE_URL`, `llm.model` = `LLM_MODEL`). The data target is `yelp-demo` / `_default` / `_default`.
 
 To run the API anyway:
 
@@ -165,8 +165,6 @@ python -m local_guide    # http://localhost:5000
 | `LLM_MODEL` | Replaces the `LLM_MODEL` sentinel (`grok-4.5-latest` in `.env.example`) |
 | `LLM_API_KEY` | Required for agent turns. Set it in `.env`, not in `config.json` |
 | `COUCHBASE_QUERY_URL` / `COUCHBASE_USERNAME` / `COUCHBASE_PASSWORD` | N1QL hydrate for suggest and business detail |
-| `default_base_id` | Catalog pin passed to `run_agent` (`base-6.1` loads `chat_request_analytics_base-6.1.json`) |
-| `base_catalog_dirs` | Directories searched for that pinned catalog file (`/app/base_catalogs`) |
 
 ```bash
 pytest -q
