@@ -1,9 +1,10 @@
-"""Fast-tier typeahead via kotenai-zeus-client run_search (no LLM)."""
+"""Fast-tier typeahead via ZeusRuntime.data.search (no LLM)."""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from zeus_client import SuggestOptions, load_config, logger, run_search_from_config
+logger = logging.getLogger("local_guide.suggest")
 
 DEFAULT_LIMIT = 8
 MIN_QUERY_LEN = 2
@@ -96,20 +97,20 @@ async def run_suggest(query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, An
         return empty_suggest(q, source="none")
 
     try:
-        cfg = await load_config()
-        result = await run_search_from_config(
+        from zeus_client import SuggestOptions
+
+        from local_guide.runtime_factory import get_runtime
+
+        rt = await get_runtime()
+        mode = rt.config.settings.mode or "analytics"
+        result = await rt.data.search(
             q,
-            cfg,
             options=SuggestOptions(
                 limit=lim,
                 min_query_len=MIN_QUERY_LEN,
                 fts_timeout_ms=2000,
                 entity_type="Business",
-                use_fts=True,
-                use_find_name=True,
-                use_find_city=True,
-                use_n1ql_hydrate=True,
-                mode_header="analytics",
+                mode_header=mode,
             ),
         )
         payload = result.to_dict()

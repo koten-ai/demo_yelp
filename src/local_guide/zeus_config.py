@@ -8,6 +8,9 @@ from local_guide.paths import PROJECT_ROOT
 
 def configure_zeus_client() -> None:
     """Set env vars before any zeus_client import (constants read env at import time)."""
+    from local_guide.runtime_factory import load_env_file
+
+    load_env_file()
     os.environ.setdefault("ZEUS_CLIENT_CONFIG_DIR", str(PROJECT_ROOT))
     os.environ.setdefault(
         "ZEUS_CHAT_REQUESTS_DIR",

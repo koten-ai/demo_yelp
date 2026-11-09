@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import BusinessCard from "../components/results/BusinessCard";
 import { ErrorBanner } from "../components/common/States";
-import { isAbortError, search } from "../api/client";
+import { agentSearch, isAbortError } from "../api/client";
+import { debugQueryValue, useDebugNavigate } from "../lib/debugQuery";
 import { normalizeBusiness, summaryFromResponse } from "../lib/normalize";
 import { renderSimpleMarkdown } from "../lib/simpleMarkdown";
 import { clearSession, getChatId, saveLastSearch, setChatId } from "../state/session";
@@ -28,7 +29,7 @@ const CANCELLED_MESSAGE = "You stopped this search.";
 
 export default function ConversationalSearchPage() {
   const loc = useLocation();
-  const nav = useNavigate();
+  const nav = useDebugNavigate();
   const locState = (loc.state as ChatLocState | null) || null;
   const seedQuery = locState?.seedQuery?.trim() || "";
   const autoSend = Boolean(locState?.autoSend && seedQuery);
@@ -62,11 +63,16 @@ export default function ConversationalSearchPage() {
     const gen = ++requestGenRef.current;
 
     try {
-      const data = await search(q, getChatId(), {
-        summarize,
+      const data = await agentSearch(q, getChatId(), {
+        aiProcessResult: summarize,
+        debug: debugQueryValue(window.location.search),
         signal: controller.signal,
       });
       if (gen !== requestGenRef.current) return;
+      if (typeof window.appendTraceCard === "function") {
+        window.appendTraceCard(q, data);
+        window.openDebugPanel?.();
+      }
       const results = Array.isArray(data.results) ? data.results : [];
       const answer = summarize
         ? summaryFromResponse(data.answer, data.structured_answer)

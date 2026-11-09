@@ -94,3 +94,18 @@ def test_extract_from_trace():
     cards = extract_businesses(trace)
     assert len(cards) == 1
     assert cards[0]["name"] == "Cafe One"
+
+
+def test_extract_from_hops_when_tool_calls_absent():
+    trace = {
+        "hops": [
+            {
+                "name": "find",
+                "result_json": {"rows": [{"name": "Hop Cafe", "city": "Austin", "stars": 4.0}]},
+            },
+            "skip-me",
+        ]
+    }
+    cards = extract_businesses(trace)
+    assert len(cards) == 1
+    assert cards[0]["name"] == "Hop Cafe"

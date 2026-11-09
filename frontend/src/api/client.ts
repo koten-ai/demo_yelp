@@ -210,6 +210,56 @@ export type SearchOptions = {
   signal?: AbortSignal;
 };
 
+export type AgentSearchOptions = {
+  /** Ask AI insight synthesis. The summary toggle on /chat. */
+  aiProcessResult?: boolean;
+  /** Truthy page debug value. Omitted or empty leaves rewind off. */
+  debug?: string | null;
+  signal?: AbortSignal;
+};
+
+function agentErrorMessage(body: unknown, status: number): string {
+  if (body && typeof body === "object") {
+    const rec = body as Record<string, unknown>;
+    if (typeof rec.error === "string" && rec.error.trim()) return rec.error;
+    const detail = rec.detail;
+    if (typeof detail === "string" && detail.trim()) return detail;
+    if (detail && typeof detail === "object") {
+      const nested = detail as Record<string, unknown>;
+      if (typeof nested.error === "string" && nested.error.trim()) return nested.error;
+    }
+  }
+  return `search failed (${status})`;
+}
+
+/** Zeus agent turn. Home and Explore keep the local `search` helper. */
+export async function agentSearch(
+  query: string,
+  chatId?: string | null,
+  options?: AgentSearchOptions
+): Promise<SearchResponse> {
+  const q = query.trim();
+  const payload: Record<string, unknown> = {
+    query: q,
+    chat_id: chatId || undefined,
+    ai_process_result: options?.aiProcessResult ?? true,
+  };
+  if (options?.debug) payload.debug = options.debug;
+  const res = await fetch("/api/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  });
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(agentErrorMessage(body, res.status));
+  if (body && typeof body === "object") {
+    const err = (body as { error?: unknown }).error;
+    if (typeof err === "string" && err.trim()) throw new Error(err);
+  }
+  return body as SearchResponse;
+}
+
 export async function search(
   query: string,
   chatId?: string | null,

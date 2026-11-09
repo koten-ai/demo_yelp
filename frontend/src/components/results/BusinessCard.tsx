@@ -1,5 +1,5 @@
-import { Link } from "react-router-dom";
 import type { UiBusiness } from "../../api/types";
+import { DebugLink } from "../../lib/debugQuery";
 
 type Props = {
   business: UiBusiness;
@@ -19,10 +19,9 @@ function Stars({ rating }: { rating: number | null }) {
 }
 
 export default function BusinessCard({ business, compact }: Props) {
-  const to = `/business/${encodeURIComponent(business.id)}`;
   return (
-    <Link
-      to={to}
+    <DebugLink
+      to={`/business/${encodeURIComponent(business.id)}`}
       state={{ business: business.raw }}
       className="group block bg-surface-container-lowest rounded-2xl border border-outline-variant/40 card-shadow overflow-hidden hover:shadow-md transition-shadow"
       target="_blank"
@@ -74,6 +73,6 @@ export default function BusinessCard({ business, compact }: Props) {
           )}
         </div>
       </div>
-    </Link>
+    </DebugLink>
   );
 }

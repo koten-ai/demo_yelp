@@ -1,8 +1,8 @@
 # LocalAI (Yelp Demo)
 
-Vite + React SPA for local business discovery. Home, Explore, Ask AI, and business details all read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`.
+Vite + React SPA for local business discovery. Home, Explore, and business details read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`. Ask AI posts to the FastAPI agent at `POST /api/search`.
 
-Running the UI needs Node.js only. It does not use a Zeus engine, an LLM key, or the FastAPI service in `src/local_guide`.
+Home and Explore need Node.js only. Ask AI also needs the API process, a Zeus URL, and `LLM_API_KEY`.
 
 ## Features
 
@@ -136,7 +136,9 @@ demo_yelp/
 | GET | `/api/business/{id}/reviews` | Reviews via V2 `find` |
 | POST | `/api/business/{id}/insight` | AI review summary |
 
-There is no chat-trace panel in the SPA. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The vendored `zeus_client_chat_trace.js` bundle is not in `src/local_guide/static/`.
+Ask AI is the only screen that calls the agent. Open the SPA with `?debug=true` (`1`, `yes`, and `on` count too). That loads `zeus_client_chat_trace/latest` from the CDN. The lightning toggle is bottom-left. Hub for that panel is `http://zeus-dev.local:9091`, not public Zeus `:8080`. A truthy debug flag on `POST /api/search` sets rewind for that turn only and the chat page mounts one Turn traces card. Home, Explore, suggest, and business detail stay on the local catalog and do not mount a trace card.
+
+The script URL is `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus_client_chat_trace/latest/zeus_client_chat_trace.js`. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The bundle is not vendored into `src/local_guide/static/`.
 
 To run the API anyway:
 
