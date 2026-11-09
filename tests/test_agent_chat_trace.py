@@ -67,7 +67,7 @@ def test_spa_navigations_keep_a_truthy_debug_query() -> None:
         assert marker in text
 
 
-def test_only_ask_ai_posts_search_and_mounts_a_card() -> None:
+def test_home_and_explore_search_zeus_without_a_trace_card() -> None:
     chat = _text("frontend/src/pages/ConversationalSearchPage.tsx")
     client = _text("frontend/src/api/client.ts")
     assert "agentSearch" in chat
@@ -81,8 +81,12 @@ def test_only_ask_ai_posts_search_and_mounts_a_card() -> None:
     assert "appendTraceCard" not in _text("frontend/src/pages/SearchResultsPage.tsx")
     assert "agentSearch" not in _text("frontend/src/pages/LandingPage.tsx")
     assert "agentSearch" not in _text("frontend/src/pages/SearchResultsPage.tsx")
-    local = client.split("export async function search(", 1)[1]
-    assert "/api/search" not in local
+    search_fn = client.split("export async function search(", 1)[1].split(
+        "export async function ", 1
+    )[0]
+    assert 'fetch("/api/search"' in search_fn
+    assert "ai_process_result: false" in search_fn
+    assert "appendTraceCard" not in search_fn
     assert "appendTraceCard" not in _text("frontend/src/pages/BusinessDetailsPage.tsx")
 
 
@@ -168,6 +172,9 @@ def test_trace_payload_merges_notes_and_skips_hops_already_present() -> None:
     trace = trace_payload(rich)
     assert trace["hops"] == [{"name": "search"}]
     assert trace["notes"] == ["kept", "added"]
+    catalog = "chat_request: live /v1/ai/chat_request.json base_id=base-6.3 req_id=req-live"
+    with_catalog = trace_payload(rich, catalog, "")
+    assert with_catalog["notes"] == ["kept", "added", catalog]
     assert trace["detective"]["version"] == 2
     assert trace["session"]["id"] == "s"
     assert trace["session"]["preferred_req_id"] == "req-1"
@@ -229,14 +236,31 @@ def _install(monkeypatch, turn: TurnResult):
         durable_sessions=False,
     )
     target = SimpleNamespace(bucket="yelp-demo", scope="_default", collection="_default")
+    remote = SimpleNamespace(
+        fetch_chat_request=AsyncMock(
+            return_value={
+                "messages": [
+                    {"role": "system", "content": "## SCOPE BRIEF\n\n## MINI-SCHEMA\n"}
+                ],
+                "_lineage": {"base_id": "base-6.3"},
+            }
+        ),
+        last_req_id="req-live",
+    )
     runtime = SimpleNamespace(
         config=SimpleNamespace(
             zeus=SimpleNamespace(url="http://zeus:8080"),
             llm=SimpleNamespace(model="grok-4.5-latest", provider="xai"),
             settings=settings,
             target=target,
+            client_floor="client-floor-6.1",
+            allow_degraded_catalog=False,
         ),
-        catalog=SimpleNamespace(load_for_turn=AsyncMock(return_value={})),
+        services=SimpleNamespace(catalog_remote=remote),
+        catalog=SimpleNamespace(
+            load_for_turn=AsyncMock(return_value={}),
+            _auth_headers=AsyncMock(return_value={}),
+        ),
         agent=SimpleNamespace(run_turn=fake_run_turn),
     )
 
@@ -256,13 +280,17 @@ async def test_debug_true_search_passes_rewind_and_trace(monkeypatch) -> None:
     out = await search_mod.run_search("coffee", None, rewind=True)
     assert len(calls) == 1
     assert calls[0]["kwargs"]["rewind"] is True
-    assert "chat_request" not in calls[0]["kwargs"]
+    assert "## MINI-SCHEMA" in calls[0]["kwargs"]["chat_request"]["messages"][0]["content"]
     assert "base_id" not in calls[0]["kwargs"]
     assert calls[0]["kwargs"]["prior_messages"] == ()
     assert out["rewind"] is True
     assert out["trace"]["session"]["preferred_req_id"] == "req-pref"
     assert out["trace"]["detective"]["version"] == 1
     assert "semantic_cache.off" in out["trace"]["notes"]
+    assert (
+        "chat_request: live /v1/ai/chat_request.json base_id=base-6.3 req_id=req-live"
+        in out["trace"]["notes"]
+    )
     assert out["trace"]["hops"][0]["name"] == "find"
     from local_guide.chat_store import CHATS
     from local_guide.chat_trace import TOOL_ORDER

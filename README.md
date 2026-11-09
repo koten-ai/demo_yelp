@@ -1,12 +1,12 @@
 # LocalAI (Yelp Demo)
 
-Vite + React SPA for local business discovery. Home, Explore, and business details read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`. Ask AI posts to the FastAPI agent at `POST /api/search`.
+Vite + React SPA for local business discovery. Home and Explore post `POST /api/search`, which loads the live Zeus catalog and runs one agent turn. Business details still read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`. Ask AI posts the same search route with insight synthesis.
 
-Home and Explore need Node.js only. Ask AI also needs the API process, a Zeus URL, and `LLM_API_KEY`.
+Home, Explore, and Ask AI need the API process, a Zeus URL, and `LLM_API_KEY`.
 
 ## Features
 
-- Keyword search over the sample catalog (name, categories, city, address, description), ranked with rating and review count
+- Home and Explore search the live Zeus catalog through `POST /api/search`
 - Business cards (rating, categories, price, hours, open/closed) and a Leaflet map on Explore
 - Explore filters for open now, price (`$`–`$$$$`), and category
 - Ask AI keeps a multi-turn chat. A follow-up that says “which”, “those”, “these”, “them”, “narrow”, or “only” searches inside the previous turn’s results. A query containing “open” keeps places marked open
@@ -14,7 +14,7 @@ Home and Explore need Node.js only. Ask AI also needs the API process, a Zeus UR
 - Business page with a photo carousel, three generated review blurbs, and a generated good / bad / best-for summary
 - Header count comes from the catalog (`100 businesses`)
 
-Search, suggestions, reviews, and insights are implemented in `frontend/src/api/client.ts`. The SearchBar can debounce a local typeahead (`enableSuggest`), and no page turns that on.
+Home and Explore search goes through `frontend/src/api/client.ts` to `POST /api/search`. Suggestions, reviews, and insights in that file still use the sample catalog. The SearchBar can debounce a local typeahead (`enableSuggest`), and no page turns that on.
 
 ## Prerequisites
 
@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The Vite server does not proxy `/api` or `/static`.
+Open http://localhost:5173. Vite proxies `/api` and `/static` to `VITE_API_PROXY`, or to `http://127.0.0.1:5000` when that variable is unset.
 
 Production build:
 
@@ -83,14 +83,14 @@ cd demo_yelp
 docker build -f Dockerfile.frontend -t local-guide-frontend .
 ```
 
-nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. Ask AI posts `/api/search` through that proxy. Home, Explore, and business detail do not.
+nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. Home, Explore, and Ask AI post `/api/search` through that proxy. Business detail does not.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BACKEND_UPSTREAM` | `http://backend:5000` | nginx `proxy_pass` target (no trailing slash) |
 | `NGINX_ENVSUBST_FILTER` | `BACKEND_` | Limit envsubst to backend knobs |
 
-`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. Ask AI on that UI calls the API. Home, Explore, and business detail stay on the bundled catalog. Compose bind-mounts `./.env` read-only (no `env_file`, so a `$` in `ZEUS_PASSWORD` stays literal) and still expects a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** with `VITE_API_PROXY` set; the dev server ignores that variable and still serves the local catalog.
+`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. Home, Explore, and Ask AI on that UI call the API. Business detail stays on the bundled catalog. Compose bind-mounts `./.env` read-only (no `env_file`, so a `$` in `ZEUS_PASSWORD` stays literal) and still expects a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** and proxies `/api` and `/static` to `VITE_API_PROXY` (`http://backend:5000` in Compose), so Home and Explore search the live Zeus catalog there too.
 
 ```bash
 # UI image only — see docker build above.
@@ -110,9 +110,9 @@ DOCKER_BUILDKIT=1 docker compose up --build
 demo_yelp/
 ├── frontend/                 # React SPA, catalog, and photos
 │   ├── src/data/catalog.json
-│   ├── src/api/client.ts     # in-browser search, reviews, insight
+│   ├── src/api/client.ts     # Zeus search, sample reviews, insight
 │   └── public/business-images/
-├── src/local_guide/          # FastAPI + Zeus client (Ask AI)
+├── src/local_guide/          # FastAPI + Zeus client (Home, Explore, Ask AI)
 ├── scripts/                  # image upload / finalize helpers
 ├── docker/                   # nginx template for Dockerfile.frontend
 ├── Dockerfile.frontend
@@ -137,7 +137,7 @@ demo_yelp/
 | GET | `/api/business/{id}/reviews` | Reviews via V2 `find` |
 | POST | `/api/business/{id}/insight` | AI review summary |
 
-Ask AI is the only screen that calls the agent. Open the SPA with `?debug=true` (`1`, `yes`, and `on` count too). That loads `zeus_client_chat_trace/latest` from the CDN. The lightning toggle is bottom-left. Hub for that panel is `http://zeus-dev.local:9091`, not public Zeus `:8080`. A truthy debug flag on `POST /api/search` sets rewind for that turn only and the chat page mounts one Turn traces card. Home, Explore, suggest, and business detail stay on the local catalog and do not mount a trace card.
+Home, Explore, and Ask AI call the agent. Open the SPA with `?debug=true` (`1`, `yes`, and `on` count too). That loads `zeus_client_chat_trace/latest` from the CDN. The lightning toggle is bottom-left. Hub for that panel is `http://zeus-dev.local:9091`, not public Zeus `:8080`. A truthy debug flag on `POST /api/search` sets rewind for that turn only and the chat page mounts one Turn traces card. Home and Explore use the live Zeus catalog and do not mount a trace card. Suggest and business detail stay on the local catalog.
 
 The script URL is `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus_client_chat_trace/latest/zeus_client_chat_trace.js`. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The bundle is not vendored into `src/local_guide/static/`.
 

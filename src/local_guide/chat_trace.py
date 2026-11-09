@@ -41,12 +41,14 @@ def debug_query_enabled(value: object | None) -> bool:
     return str(value).strip().lower() in _TRUTHY_QUERY
 
 
-def trace_payload(result: Any) -> dict[str, Any]:
+def trace_payload(result: Any, *extra_notes: str) -> dict[str, Any]:
     """Widget trace from public_trace. Hops copy only when that trace has none."""
     debug = result.debug
     raw_public = getattr(debug, "public_trace", None)
     trace: dict[str, Any] = dict(raw_public) if isinstance(raw_public, Mapping) else {}
-    notes = getattr(debug, "notes", None) or ()
+    notes = tuple(getattr(debug, "notes", None) or ()) + tuple(
+        note for note in extra_notes if note
+    )
     if notes:
         existing = list(trace.get("notes") or [])
         for note in notes:
@@ -77,6 +79,7 @@ def inspector_envelope(
     mode: str,
     model: str,
     provider: str,
+    extra_notes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Fields the chat-trace widget reads off an agent search response."""
     return {
@@ -87,5 +90,5 @@ def inspector_envelope(
         "model": model,
         "provider": provider,
         "tool_order": tool_order(),
-        "trace": trace_payload(result),
+        "trace": trace_payload(result, *extra_notes),
     }
