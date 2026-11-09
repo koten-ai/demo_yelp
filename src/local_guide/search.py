@@ -2,21 +2,18 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
-from dataclasses import asdict, is_dataclass
-from pathlib import Path
-from urllib.parse import urlparse
+from dataclasses import replace
 
 import httpx
-from zeus_client import ClientSettings
+from zeus_client import TurnStatus
+from zeus_client.domain.errors import ZeusClientError
 
 from local_guide.answer_parser import parse_markdown_answer, structured_answer_to_results
 from local_guide.chat_store import CHATS, chat_lock, persist_chat
-from local_guide.output_schema import DEMO_OUTPUT_SCHEMA
-from local_guide.results_parser import extract_businesses, zeus_data_to_results
-from local_guide.zeus_config import client_symbol, env_text, load_config, resolve_document
+from local_guide.results_parser import extract_businesses
+from local_guide.zeus_config import client_symbol, env_text, get_runtime
 
 logger = logging.getLogger("local_guide.search")
 
@@ -26,40 +23,13 @@ if _user_facing_answer is None:
         return answer if isinstance(answer, str) else ("" if answer is None else str(answer))
 
 
-def _v1_zeus_config(zcfg: dict, settings_block: dict) -> dict:
-    """Zeus dict for v1 run_agent. Secrets stay in this copy, not in config.json.
-
-    v1 auth reads ``password`` and ``bearer_token``. The beer file stores only
-    ``password_env``. v1 sessions read ``enable_durable_sessions``.
-    """
-    out = dict(zcfg)
-    mode = str(out.get("auth_mode") or "").strip().lower()
-    if mode == "bearer":
-        token = os.environ.get("ZEUS_BEARER_TOKEN")
-        if token:
-            out["bearer_token"] = token
-    elif mode == "basic":
-        env_name = str(out.get("password_env") or "ZEUS_PASSWORD").strip() or "ZEUS_PASSWORD"
-        secret = os.environ.get(env_name)
-        if secret:
-            out["password"] = secret
-    if "durable_sessions" in settings_block:
-        out["enable_durable_sessions"] = bool(settings_block["durable_sessions"])
-    return out
-
-
-def _v1_client_settings(ai_process_result: bool, settings_block: dict) -> ClientSettings:
-    """ClientSettings fields v1 run_agent accepts. Request flag wins for insight."""
-    kwargs: dict = {"ai_process_result": bool(ai_process_result)}
-    raw_rounds = settings_block.get("max_rounds")
-    if raw_rounds is not None and str(raw_rounds).strip() != "":
-        kwargs["max_rounds"] = max(1, int(raw_rounds))
-    return ClientSettings(**kwargs)
-
-
-def normalize_api_version(value: object) -> str:
-    text = str(value or "v2").strip().lower()
-    return text if text in {"v1", "v2"} else "v2"
+def _layer_dict(layer: object) -> dict | None:
+    if isinstance(layer, dict):
+        return layer
+    summary = getattr(layer, "summary", None)
+    if isinstance(summary, str):
+        return {"summary": summary}
+    return None
 
 
 # App catalog used when this zeus_client build does not export build_tool_order.
@@ -89,11 +59,6 @@ def build_tool_order(chats=None):
         return _APP_TOOL_ORDER
     return client_build(chats)
 
-
-async def run_agent(*args, **kwargs):
-    from zeus_client import run_agent as client_run_agent
-
-    return await client_run_agent(*args, **kwargs)
 
 LOCAL_PROMPT_PREFIX = (
     "Find local businesses that match these preferences in the yelp-demo knowledge graph. "
@@ -134,24 +99,6 @@ _POISON_MARKERS = (
     "No verifiable",
     "collection boundary errors",
 )
-
-
-def _provider_id(provider: dict) -> str:
-    label = (provider.get("label") or "").strip().lower()
-    if label:
-        return label.split()[0]
-    host = urlparse(provider.get("base_url") or "").netloc
-    return host.split(".")[0] if host else "default"
-
-
-def _structured_response_payload(structured) -> dict:
-    if is_dataclass(structured):
-        return asdict(structured)
-    return {
-        "answer": getattr(structured, "answer", ""),
-        "zeus_data": list(getattr(structured, "zeus_data", []) or []),
-        "warnings": list(getattr(structured, "warnings", []) or []),
-    }
 
 
 def _message_text(turn: dict) -> str:
@@ -246,44 +193,23 @@ async def _search_async(
     *,
     ai_process_result: bool = False,
 ) -> dict:
-    cfg = resolve_document(await load_config())
-    zcfg = cfg.get("zeus") if isinstance(cfg.get("zeus"), dict) else {}
-    zeus_url = str(zcfg.get("url") or "").rstrip("/")
-    zeus_connection = zcfg.get("name") or "default"
+    """One agent turn. Target, mode, and model come from the runtime."""
+    if not env_text("LLM_API_KEY"):
+        raise ValueError("LLM_API_KEY is not set (set it in .env, not config.json)")
+
+    rt = await get_runtime()
+    zeus_url = str(rt.config.zeus.url or "").rstrip("/")
     if not zeus_url:
         raise ValueError("no Zeus URL configured (set ZEUS_URL)")
 
-    llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
-    base_url = str(llm.get("base_url") or "").rstrip("/")
-    api_key = env_text("LLM_API_KEY")
-    if not api_key:
-        raise ValueError("LLM_API_KEY is not set (set it in .env, not config.json)")
-    provider_id = _provider_id(
-        {
-            "label": llm.get("label") or llm.get("provider"),
-            "base_url": base_url,
-        }
-    )
-    model = str(llm.get("model") or "")
-
-    api_version = normalize_api_version(cfg.get("default_api_version", "v2"))
-    settings_block = cfg.get("settings") if isinstance(cfg.get("settings"), dict) else {}
-    mode = str(settings_block.get("mode") or cfg.get("default_mode") or "analytics")
-    base_id = (cfg.get("default_base_id") or "").strip() or None
-    raw_base_dirs = cfg.get("base_catalog_dirs") or []
-    base_catalog_dirs: list[Path] | None = None
-    if isinstance(raw_base_dirs, (list, tuple)) and raw_base_dirs:
-        base_catalog_dirs = [Path(str(p)) for p in raw_base_dirs if str(p).strip()]
-        if not base_catalog_dirs:
-            base_catalog_dirs = None
-    sample = cfg.get("default_sample", "yelp-demo")
-    samples = cfg.get("samples") if isinstance(cfg.get("samples"), dict) else {}
-    triple = samples.get(sample) if isinstance(samples.get(sample), dict) else {}
-    if not triple and isinstance(cfg.get("target"), dict):
-        triple = cfg["target"]
-    bucket = triple.get("bucket", sample)
-    scope = triple.get("scope", "_default")
-    collection = triple.get("collection", "_default")
+    settings = rt.config.settings
+    if bool(ai_process_result) != bool(settings.ai_process_result):
+        settings = replace(settings, ai_process_result=bool(ai_process_result))
+    mode = str(settings.mode or "analytics")
+    model = str(rt.config.llm.model or "")
+    provider_id = str(getattr(rt.config.llm, "provider", "") or "xai")
+    target_obj = rt.config.target
+    target = f"{target_obj.bucket}/{target_obj.scope}/{target_obj.collection}"
 
     message = query.strip()
     chat_id = chat_id or ("yelp_" + uuid.uuid4().hex[:12])
@@ -299,163 +225,97 @@ async def _search_async(
                 "last_results": [],
             }
         prior_turns = list(CHATS[chat_id]["turns"] or [])
-        prior_sid = CHATS[chat_id].get("zeus_session_id", "") or ""
-        prior_round = int(CHATS[chat_id].get("zeus_round", 0) or 0)
-
         if history_looks_poisoned(prior_turns):
             logger.warning(
-                "resetting poisoned chat history chat_id=%s turns=%d prior_sid=%s",
+                "resetting poisoned chat history chat_id=%s turns=%d",
                 chat_id,
                 len(prior_turns),
-                (prior_sid or "")[:16],
             )
             prior_turns = []
-            prior_sid = ""
-            prior_round = 0
             CHATS[chat_id]["turns"] = []
-            CHATS[chat_id].pop("zeus_session_id", None)
-            CHATS[chat_id]["zeus_round"] = 0
 
-        settings = _v1_client_settings(ai_process_result, settings_block)
-        answer, trace, new_turns, session_meta, structured = await run_agent(
-            zeus_url,
-            _v1_zeus_config(zcfg, settings_block),
-            base_url,
-            api_key,
-            model,
-            api_version,
-            mode,
-            bucket,
-            scope,
-            collection,
-            message,
-            prior_turns,
-            optimized=True,
-            provider_id=provider_id,
-            conv_id=chat_id,
-            zeus_session_id=prior_sid,
-            zeus_round=prior_round,
-            structured=True,
-            output_schema=DEMO_OUTPUT_SCHEMA,
-            settings=settings,
-            base_id=base_id,
-            base_catalog_dirs=base_catalog_dirs,
-        )
-
-        CHATS[chat_id]["turns"] = new_turns
-        session_error = str((trace or {}).get("session_error") or "")
-        notes = (trace or {}).get("notes") or []
-        rehydrate_failed = any(
-            isinstance(n, str) and "rehydrate" in n and "failed" in n for n in notes
-        )
-        turn_conflict = "turn 409" in session_error or (
-            session_error.startswith("turn ") and "409" in session_error
-        )
-        # Client now recreates a durable session same-turn when rehydrate fails.
-        # Prefer the sid returned from this turn; only drop when nothing usable
-        # came back (create also failed, or turn conflict without a new sid).
-        returned_sid = (session_meta.get("session_id") or "").strip()
-        session_created = bool((trace or {}).get("session", {}).get("created")) and bool(
-            returned_sid
-        )
-        if returned_sid:
-            CHATS[chat_id]["zeus_session_id"] = returned_sid
-            CHATS[chat_id]["zeus_round"] = session_meta.get("round") or (
-                1 if session_created else prior_round
+        prior_messages = tuple(turn for turn in prior_turns if isinstance(turn, dict))
+        try:
+            # chat_request and base_id stay omitted so the live catalog is loaded.
+            await rt.catalog.load_for_turn(settings.mode, target=rt.config.target)
+            result = await rt.agent.run_turn(
+                message,
+                target=rt.config.target,
+                settings=settings,
+                chat_id=chat_id,
+                model=model,
+                enable_sessions=bool(settings.durable_sessions),
+                prior_messages=prior_messages,
             )
-            CHATS[chat_id]["contract_status"] = session_meta.get("contract_status")
-            if rehydrate_failed and session_created:
-                logger.info(
-                    "recovered dead zeus session chat_id=%s prior_sid=%s new_sid=%s",
-                    chat_id,
-                    (prior_sid or "")[:16],
-                    returned_sid[:16],
-                )
-        elif rehydrate_failed or turn_conflict:
-            CHATS[chat_id].pop("zeus_session_id", None)
-            CHATS[chat_id]["zeus_round"] = 0
-            CHATS[chat_id]["contract_status"] = session_meta.get("contract_status") or "none"
-            logger.warning(
-                "dropped dead zeus session chat_id=%s prior_sid=%s rehydrate_failed=%s turn_conflict=%s",
-                chat_id,
-                (prior_sid or "")[:16],
-                rehydrate_failed,
-                turn_conflict,
-            )
+        except ZeusClientError as exc:
+            raise RuntimeError(exc.public_message or str(exc)) from exc
+        if result.status in {TurnStatus.ERROR, TurnStatus.REFUSED}:
+            err = getattr(result.error, "message", None) or "agent turn failed"
+            raise RuntimeError(str(err))
 
-        target = f"{bucket}/{scope}/{collection}"
-        entry = {
-            "question": query,
-            "answer": answer,
-            "target": target,
-            "mode": mode,
-            "api_version": api_version,
-            "model": model,
-            "provider": provider_id,
-            "trace": trace,
-            "created": time.time(),
-            "session_id": returned_sid or (None if (rehydrate_failed or turn_conflict) else prior_sid),
-            "session_round": (
-                session_meta.get("round")
-                if returned_sid
-                else (0 if (rehydrate_failed or turn_conflict) else prior_round)
-            ),
-            "contract_status": session_meta.get("contract_status"),
-        }
-        CHATS[chat_id].setdefault("traces", []).append(entry)
+        trace = result.debug.to_dict()
+        trace["tool_calls"] = [dict(hop) for hop in result.debug.hops]
+        new_turns = []
+        for msg in result.messages:
+            if hasattr(msg, "to_openai"):
+                new_turns.append(msg.to_openai())
+            elif isinstance(msg, dict):
+                new_turns.append(dict(msg))
 
-        results = zeus_data_to_results(structured.zeus_data)
-        if not results:
-            results = extract_businesses(trace)
-
-        # Ask AI / ai_process insight sometimes returns a fenced Layer A dump
-        # (summary + policy_action + wish_i_knew …). Prefer ui_text / peeled summary.
-        layer = getattr(structured, "layer_a", None) or {}
+        answer = result.answer or ""
+        layer = _layer_dict(getattr(result, "layer_a", None))
         layer_summary = layer.get("summary") if isinstance(layer, dict) else None
         cleaned = _user_facing_answer(
             answer if isinstance(answer, str) else str(answer or ""),
-            ui_text=getattr(structured, "ui_text", None),
+            ui_text=None,
             layer_summary=layer_summary if isinstance(layer_summary, str) else None,
         )
         if cleaned and cleaned != (answer or ""):
             answer = cleaned
-            try:
-                structured.answer = answer  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            if isinstance(trace, dict):
-                notes = list(trace.get("notes") or [])
-                notes.append("[WARN] peeled Layer A envelope from Ask AI answer")
-                trace["notes"] = notes
+            notes = list(trace.get("notes") or [])
+            notes.append("[WARN] peeled Layer A envelope from Ask AI answer")
+            trace["notes"] = notes
 
+        results = extract_businesses(trace)
         structured_answer = parse_markdown_answer(answer)
         if not results and structured_answer:
             results = structured_answer_to_results(structured_answer)
 
         if _answer_is_empty(answer) and results:
             answer = synthesize_answer_from_results(query, results)
-            try:
-                structured.answer = answer  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            if isinstance(trace, dict):
-                notes = list(trace.get("notes") or [])
-                notes.append(
-                    "[WARN] empty model answer; synthesized summary from zeus_data/results"
-                )
-                trace["notes"] = notes
+            notes = list(trace.get("notes") or [])
+            notes.append("[WARN] empty model answer; synthesized summary from results")
+            trace["notes"] = notes
 
+        session_id = str(getattr(result.debug, "session_id", "") or "")
+        session_round = result.debug.rounds
+        contract_status = result.debug.contract_status
+        CHATS[chat_id]["turns"] = new_turns
         CHATS[chat_id]["last_results"] = results
+        CHATS[chat_id].setdefault("traces", []).append(
+            {
+                "question": query,
+                "answer": answer,
+                "target": target,
+                "mode": mode,
+                "api_version": "v2",
+                "model": model,
+                "provider": provider_id,
+                "trace": trace,
+                "created": time.time(),
+                "session_id": session_id or None,
+                "session_round": session_round,
+                "contract_status": contract_status,
+            }
+        )
         await persist_chat(chat_id)
 
-    answer_len = len(answer) if isinstance(answer, str) else len(str(answer or ""))
     logger.info(
-        "search complete chat_id=%s results=%d zeus_data=%d structured=%s answer_len=%d",
+        "search complete chat_id=%s results=%d structured=%s answer_len=%d",
         chat_id,
         len(results),
-        len(structured.zeus_data),
         bool(structured_answer),
-        answer_len,
+        len(answer) if isinstance(answer, str) else len(str(answer or "")),
     )
 
     return {
@@ -463,20 +323,19 @@ async def _search_async(
         "query": query,
         "answer": answer,
         "structured_answer": structured_answer,
-        "structured_response": _structured_response_payload(structured),
+        "structured_response": {"answer": answer, "zeus_data": [], "warnings": []},
         "results": results,
         "trace": trace,
         "tool_order": build_tool_order(CHATS),
         "target": target,
-        "api_version": api_version,
+        "api_version": "v2",
         "mode": mode,
-        "base_id": base_id,
         "model": model,
         "provider": provider_id,
-        "zeus_connection": zeus_connection,
+        "zeus_connection": "default",
         "zeus_url": zeus_url,
-        "session_id": session_meta.get("session_id") or prior_sid,
-        "session_round": session_meta.get("round") or prior_round,
-        "contract_status": session_meta.get("contract_status"),
+        "session_id": session_id,
+        "session_round": session_round,
+        "contract_status": contract_status,
         "ai_process_result": bool(ai_process_result),
     }

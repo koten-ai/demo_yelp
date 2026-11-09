@@ -1,27 +1,18 @@
-"""Search must honor config default_mode + default_base_id (deploy contract)."""
+"""Search enters the Zeus 2.5 pipeline and keeps secrets in env names."""
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass, field
-from pathlib import Path
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from zeus_client import TurnStatus
+from zeus_client.config.models import ClientSettings, DataTarget
 
 
-@dataclass
-class StructuredAgentResponse:
-    answer: str
-    zeus_data: list = field(default_factory=list)
-    warnings: list = field(default_factory=list)
-
-
-def _fake_structured(answer: str = "ok") -> StructuredAgentResponse:
-    return StructuredAgentResponse(answer=answer, zeus_data=[], warnings=[])
-
-
-def _sentinel_config(*, default_mode: str | None, base_id: str | None) -> dict:
-    cfg = {
+def _sentinel_config() -> dict:
+    return {
+        "profile": "development",
         "zeus": {
             "url": "http://from-file:8080",
             "auth_mode": "ZEUS_AUTH_MODE",
@@ -29,6 +20,7 @@ def _sentinel_config(*, default_mode: str | None, base_id: str | None) -> dict:
             "password_env": "ZEUS_PASSWORD",
         },
         "llm": {
+            "provider": "xai",
             "base_url": "LLM_BASE_URL",
             "model": "LLM_MODEL",
             "api_key_env": "LLM_API_KEY",
@@ -39,152 +31,293 @@ def _sentinel_config(*, default_mode: str | None, base_id: str | None) -> dict:
             "api_key": "inline-api-key-do-not-pass",
             "models": ["LLM_MODEL"],
         },
-        "settings": {"mode": "ZEUS_MODE"},
-        "default_api_version": "v2",
-        "default_sample": "yelp-demo",
-        "samples": {
-            "yelp-demo": {
-                "bucket": "yelp-demo",
-                "scope": "_default",
-                "collection": "_default",
-            }
+        "settings": {
+            "mode": "ZEUS_MODE",
+            "durable_sessions": False,
+            "ai_process_result": False,
+            "max_rounds": 12,
+        },
+        "target": {
+            "bucket": "yelp-demo",
+            "scope": "_default",
+            "collection": "_default",
         },
     }
-    if default_mode is not None:
-        cfg["default_mode"] = default_mode
-    if base_id is not None:
-        cfg["default_base_id"] = base_id
-        cfg["base_catalog_dirs"] = ["/app/base_catalogs"]
-    return cfg
 
 
-def _install_search_fakes(monkeypatch, search_mod, cfg: dict) -> dict:
-    captured: dict = {}
+class _Debug:
+    def __init__(self) -> None:
+        self.hops = ({"name": "search", "result_json": {"rows": []}},)
+        self.session_id = ""
+        self.rounds = 0
+        self.contract_status = None
 
-    async def fake_run_agent(*args, **kwargs):
-        captured["zeus_url"] = args[0]
-        captured["base_url"] = args[2]
-        captured["api_key"] = args[3]
-        captured["model"] = args[4]
-        captured["mode"] = args[6] if len(args) > 6 else kwargs.get("mode")
-        captured["zcfg"] = args[1]
-        captured["base_id"] = kwargs.get("base_id")
-        captured["base_catalog_dirs"] = kwargs.get("base_catalog_dirs")
-        captured["settings"] = kwargs.get("settings")
-        captured["kwargs"] = kwargs
-        return "ok", {"notes": []}, [], {"session_id": "", "round": 0}, _fake_structured()
+    def to_dict(self) -> dict:
+        return {
+            "notes": [],
+            "hops": [dict(hop) for hop in self.hops],
+            "session_id": self.session_id,
+            "rounds": self.rounds,
+            "contract_status": self.contract_status,
+        }
 
-    async def fake_load_config():
-        return cfg
 
-    monkeypatch.setattr(search_mod, "load_config", fake_load_config)
-    monkeypatch.setattr(search_mod, "run_agent", fake_run_agent)
+class _Result:
+    def __init__(self) -> None:
+        self.answer = "ok"
+        self.status = TurnStatus.OK
+        self.debug = _Debug()
+        self.messages: list = []
+        self.layer_a = None
+        self.error = None
+
+
+def _fake_runtime(settings: ClientSettings):
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            settings=settings,
+            target=DataTarget(bucket="yelp-demo", scope="_default", collection="_default"),
+            llm=SimpleNamespace(model="grok-4.5-latest", provider="xai"),
+            zeus=SimpleNamespace(url="http://from-env:8080"),
+        ),
+        catalog=SimpleNamespace(load_for_turn=AsyncMock()),
+        agent=SimpleNamespace(run_turn=AsyncMock(return_value=_Result())),
+    )
+
+
+def _install_search_fakes(monkeypatch, search_mod, runtime):
+    async def fake_get_runtime():
+        return runtime
+
+    monkeypatch.setattr(search_mod, "get_runtime", fake_get_runtime)
     monkeypatch.setattr(search_mod, "persist_chat", AsyncMock())
     monkeypatch.setattr(search_mod, "build_tool_order", lambda _chats: {"v1": [], "v2": []})
-    monkeypatch.setattr(search_mod, "zeus_data_to_results", lambda _d: [])
     monkeypatch.setattr(search_mod, "extract_businesses", lambda _t: [])
     monkeypatch.setattr(search_mod, "parse_markdown_answer", lambda _a: None)
-    return captured
+
+
+def _set_search_env(monkeypatch, *, mode: str | None = "analytics", auth: str = "basic") -> None:
+    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
+    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
+    monkeypatch.setenv("ZEUS_AUTH_MODE", auth)
+    monkeypatch.setenv("ZEUS_PASSWORD", "env-secret")
+    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
+    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
+    if mode is None:
+        monkeypatch.delenv("ZEUS_MODE", raising=False)
+    else:
+        monkeypatch.setenv("ZEUS_MODE", mode)
 
 
 @pytest.mark.asyncio
-async def test_search_passes_analytics_base_id(monkeypatch):
+async def test_search_calls_run_turn_without_frozen_catalog(monkeypatch):
     from local_guide import search as search_mod
 
-    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
-    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
-    monkeypatch.setenv("ZEUS_MODE", "analytics")
-    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
-    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
-    cfg = _sentinel_config(default_mode="analytics", base_id="base-6.1")
-    captured = _install_search_fakes(monkeypatch, search_mod, cfg)
+    _set_search_env(monkeypatch)
+    settings = ClientSettings(
+        ai_process_result=False,
+        durable_sessions=False,
+        max_rounds=12,
+        mode="analytics",
+    )
+    runtime = _fake_runtime(settings)
+    _install_search_fakes(monkeypatch, search_mod, runtime)
 
     out = await search_mod._search_async("pizza in Tampa", None, ai_process_result=False)
 
-    assert captured["mode"] == "analytics"
-    assert captured["base_id"] == "base-6.1"
-    assert captured["base_catalog_dirs"] == [Path("/app/base_catalogs")]
-    assert captured["zeus_url"] == "http://from-env:8080"
-    assert captured["base_url"] == "https://api.x.ai/v1"
-    assert captured["model"] == "grok-4.5-latest"
-    assert "api_key_env" not in captured["kwargs"]
-    assert captured["api_key"] == os.environ["LLM_API_KEY"]
-    assert captured["api_key"] != "inline-api-key-do-not-pass"
+    load_args, load_kwargs = runtime.catalog.load_for_turn.await_args
+    assert load_args == ("analytics",)
+    assert load_kwargs["target"] is runtime.config.target
+    message, kwargs = runtime.agent.run_turn.await_args.args[0], runtime.agent.run_turn.await_args.kwargs
+    assert message == "pizza in Tampa"
+    assert "chat_request" not in kwargs
+    assert "base_id" not in kwargs
+    assert kwargs["target"] is runtime.config.target
+    assert kwargs["model"] == "grok-4.5-latest"
+    assert kwargs["enable_sessions"] is False
+    assert kwargs["settings"].ai_process_result is False
+    assert kwargs["settings"].durable_sessions is False
+    assert kwargs["settings"].max_rounds == 12
     assert out["mode"] == "analytics"
-    assert out["base_id"] == "base-6.1"
+    assert "base_id" not in out
+    assert out["target"] == "yelp-demo/_default/_default"
+    assert out["zeus_url"] == "http://from-env:8080"
+    assert out["model"] == "grok-4.5-latest"
 
 
 @pytest.mark.asyncio
 async def test_search_defaults_mode_analytics_when_missing(monkeypatch):
     from local_guide import search as search_mod
 
-    monkeypatch.delenv("ZEUS_MODE", raising=False)
-    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
-    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
-    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
-    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
-    cfg = _sentinel_config(default_mode=None, base_id=None)
-    captured = _install_search_fakes(monkeypatch, search_mod, cfg)
+    _set_search_env(monkeypatch, mode=None)
+    settings = ClientSettings(mode="analytics", durable_sessions=False, max_rounds=12)
+    runtime = _fake_runtime(settings)
+    _install_search_fakes(monkeypatch, search_mod, runtime)
 
     out = await search_mod._search_async("coffee", None)
 
-    assert captured["mode"] == "analytics"
-    assert captured["base_id"] is None
-    assert "api_key_env" not in captured["kwargs"]
-    assert captured["api_key"] == "from-env-llm-key"
-    assert captured["api_key"] != "inline-api-key-do-not-pass"
-    assert captured["base_url"] == "https://api.x.ai/v1"
-    assert captured["model"] == "grok-4.5-latest"
+    assert runtime.catalog.load_for_turn.await_args.args[0] == "analytics"
+    assert "base_id" not in runtime.agent.run_turn.await_args.kwargs
+    assert "chat_request" not in runtime.agent.run_turn.await_args.kwargs
     assert out["mode"] == "analytics"
-    assert out.get("base_id") is None
+    assert "base_id" not in out
+    assert out["target"] == "yelp-demo/_default/_default"
 
 
 @pytest.mark.asyncio
-async def test_search_gives_v1_the_env_secret_and_settings(monkeypatch):
+async def test_search_request_flag_overrides_ai_process_result(monkeypatch):
     from local_guide import search as search_mod
 
-    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
-    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
+    _set_search_env(monkeypatch)
+    settings = ClientSettings(
+        ai_process_result=False,
+        durable_sessions=False,
+        max_rounds=12,
+        mode="analytics",
+    )
+    runtime = _fake_runtime(settings)
+    _install_search_fakes(monkeypatch, search_mod, runtime)
+
+    await search_mod._search_async("pizza", None, ai_process_result=True)
+
+    used = runtime.agent.run_turn.await_args.kwargs["settings"]
+    assert used.ai_process_result is True
+    assert used.durable_sessions is False
+    assert used.max_rounds == 12
+    assert runtime.agent.run_turn.await_args.kwargs["enable_sessions"] is False
+
+
+def test_auth_mode_prefers_env_then_file(monkeypatch):
+    from local_guide.zeus_config import resolve_document
+
+    monkeypatch.delenv("ZEUS_URL", raising=False)
+    monkeypatch.delenv("ZEUS_AUTH_MODE", raising=False)
+    file_mode = _sentinel_config()
+    file_mode["zeus"]["auth_mode"] = "none"
+    assert resolve_document(file_mode)["zeus"]["auth_mode"] == "none"
+
     monkeypatch.setenv("ZEUS_AUTH_MODE", "basic")
-    monkeypatch.setenv("ZEUS_PASSWORD", "env-secret")
-    monkeypatch.setenv("ZEUS_MODE", "analytics")
-    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
-    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
-    cfg = _sentinel_config(default_mode="analytics", base_id=None)
-    cfg["settings"] = {
-        "mode": "ZEUS_MODE",
-        "durable_sessions": False,
-        "max_rounds": 12,
-    }
-    captured = _install_search_fakes(monkeypatch, search_mod, cfg)
-
-    await search_mod._search_async("pizza", None, ai_process_result=False)
-
-    assert captured["zcfg"]["password"] == "env-secret"
-    assert captured["zcfg"]["enable_durable_sessions"] is False
-    assert "password" not in cfg["zeus"]
-    assert captured["settings"].max_rounds == 12
-    assert captured["settings"].ai_process_result is False
-    assert "api_key_env" not in captured["kwargs"]
+    file_mode["zeus"]["auth_mode"] = "bearer"
+    assert resolve_document(file_mode)["zeus"]["auth_mode"] == "basic"
 
 
-@pytest.mark.asyncio
-async def test_search_copies_bearer_token_for_v1(monkeypatch):
-    from local_guide import search as search_mod
+def test_resolved_config_keeps_secrets_in_env_names(monkeypatch):
+    from zeus_client.config.loader import config_from_mapping
 
-    monkeypatch.setenv("LLM_API_KEY", "from-env-llm-key")
-    monkeypatch.setenv("ZEUS_URL", "http://from-env:8080")
-    monkeypatch.setenv("ZEUS_AUTH_MODE", "bearer")
+    from local_guide.zeus_config import resolve_document
+
+    _set_search_env(monkeypatch, mode=None)
+    resolved = resolve_document(_sentinel_config())
+    assert resolved["zeus"]["auth_mode"] == "basic"
+    assert resolved["zeus"]["url"] == "http://from-env:8080"
+    assert resolved["zeus"]["password_env"] == "ZEUS_PASSWORD"
+    assert "password" not in resolved["zeus"]
+    assert "bearer_token" not in resolved["zeus"]
+    assert resolved["llm"]["api_key_env"] == "LLM_API_KEY"
+    assert "api_key" not in resolved["llm"]
+    assert resolved["llm"]["base_url"] == "https://api.x.ai/v1"
+    assert resolved["llm"]["model"] == "grok-4.5-latest"
+    assert resolved["settings"]["mode"] == "analytics"
+    assert resolved["settings"]["durable_sessions"] is False
+
+    cfg = config_from_mapping(resolved)
+    assert cfg.zeus.url == "http://from-env:8080"
+    assert cfg.zeus.auth_mode == "basic"
+    assert cfg.zeus.password_env == "ZEUS_PASSWORD"
+    assert cfg.llm.api_key_env == "LLM_API_KEY"
+    assert cfg.llm.base_url == "https://api.x.ai/v1"
+    assert cfg.llm.model == "grok-4.5-latest"
+    assert cfg.settings.mode == "analytics"
+    assert cfg.settings.durable_sessions is False
+    assert cfg.settings.max_rounds == 12
+    assert cfg.settings.ai_process_result is False
+    assert cfg.target.bucket == "yelp-demo"
+    blob = repr(cfg)
+    assert "env-secret" not in blob
+    assert "from-env-llm-key" not in blob
+    assert "inline-api-key-do-not-pass" not in blob
+
+
+def test_bearer_token_stays_in_the_environment(monkeypatch):
+    from zeus_client.config.loader import config_from_mapping
+
+    from local_guide.zeus_config import resolve_document
+
+    _set_search_env(monkeypatch, auth="bearer")
     monkeypatch.setenv("ZEUS_BEARER_TOKEN", "env-token")
     monkeypatch.delenv("ZEUS_PASSWORD", raising=False)
-    monkeypatch.setenv("LLM_BASE_URL", "https://api.x.ai/v1")
-    monkeypatch.setenv("LLM_MODEL", "grok-4.5-latest")
-    cfg = _sentinel_config(default_mode=None, base_id=None)
-    captured = _install_search_fakes(monkeypatch, search_mod, cfg)
+    resolved = resolve_document(_sentinel_config())
+    cfg = config_from_mapping(resolved)
 
-    await search_mod._search_async("pizza", None)
+    assert resolved["zeus"]["auth_mode"] == "bearer"
+    assert "bearer_token" not in resolved["zeus"]
+    assert "password" not in resolved["zeus"]
+    assert cfg.zeus.auth_mode == "bearer"
+    assert cfg.zeus.token_env in (None, "ZEUS_BEARER_TOKEN")
+    assert "env-token" not in repr(cfg)
 
-    assert captured["zcfg"]["auth_mode"] == "bearer"
-    assert captured["zcfg"]["bearer_token"] == "env-token"
-    assert "password" not in captured["zcfg"]
-    assert "bearer_token" not in cfg["zeus"]
+
+@pytest.mark.asyncio
+async def test_load_config_survives_a_second_call(monkeypatch):
+    from local_guide import zeus_config
+
+    monkeypatch.setattr(zeus_config, "_cached", None)
+    monkeypatch.setattr(zeus_config, "_cached_token", None)
+    first = await zeus_config.load_config()
+    second = await zeus_config.load_config()
+
+    assert first is second
+    assert second["zeus"]["password_env"] == "ZEUS_PASSWORD"
+    assert "password" not in second["zeus"]
+    assert "api_key" not in second.get("llm", {})
+
+
+@pytest.mark.asyncio
+async def test_get_runtime_rebuilds_when_the_target_changes(monkeypatch, tmp_path):
+    from local_guide import zeus_config
+
+    (tmp_path / "config.json").write_text(json.dumps(_sentinel_config()), encoding="utf-8")
+    monkeypatch.setattr(zeus_config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(zeus_config, "_cached", None)
+    monkeypatch.setattr(zeus_config, "_cached_token", None)
+    monkeypatch.setattr(zeus_config, "_runtime", None)
+    monkeypatch.setattr(zeus_config, "_runtime_token", None)
+    _set_search_env(monkeypatch)
+    for name in (
+        "ZEUS_CLIENT_URL",
+        "ZEUS_CLIENT_BUCKET",
+        "ZEUS_CLIENT_SCOPE",
+        "ZEUS_CLIENT_COLLECTION",
+        "ZEUS_CLIENT_AUTH_MODE",
+        "ZEUS_CLIENT_MODE",
+        "ZEUS_CLIENT_LLM_MODEL",
+        "ZEUS_CLIENT_LLM_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ZEUS_BUCKET", "yelp-demo")
+
+    first = await zeus_config.get_runtime()
+    assert first.config.target.bucket == "yelp-demo"
+    monkeypatch.setenv("ZEUS_BUCKET", "other-bucket")
+    second = await zeus_config.get_runtime()
+
+    assert second is not first
+    assert second.config.target.bucket == "other-bucket"
+    assert second.config.zeus.url == "http://from-env:8080"
+
+
+def test_build_runtime_wires_pipeline_ports(monkeypatch):
+    from local_guide.zeus_config import build_runtime, resolve_document
+
+    _set_search_env(monkeypatch)
+    rt = build_runtime(resolve_document(_sentinel_config()))
+
+    assert rt.services.zeus is not None
+    assert rt.services.llm is not None
+    assert rt.services.catalog is not None
+    assert rt.services.catalog_remote is not None
+    assert rt.config.zeus.password_env == "ZEUS_PASSWORD"
+    assert rt.config.llm.api_key_env == "LLM_API_KEY"
+    assert rt.config.settings.durable_sessions is False
+    assert "env-secret" not in repr(rt.config)
+    assert "from-env-llm-key" not in repr(rt.config)

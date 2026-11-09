@@ -26,7 +26,7 @@ _CLIENT_ENV_PAIRS = (
 _AUTH_MODES = frozenset({"none", "basic", "bearer", "session", "certificate", "pat", "m2m"})
 
 _cached: dict | None = None
-_cache_token: tuple | None = None
+_cached_token: tuple | None = None
 
 
 def env_text(name: str) -> str:
@@ -74,46 +74,39 @@ def configure_zeus_client() -> None:
 
 
 def resolve_auth_mode(raw: str | None) -> str:
-    """Resolve a beer auth sentinel to a real mode."""
-    auth = (raw or "").strip()
-    if auth not in _AUTH_MODES:
-        auth = env_text(auth) or env_text("ZEUS_AUTH_MODE") or "basic"
+    """Env mode wins, then a real mode in the file, then basic."""
     env_auth = env_text("ZEUS_AUTH_MODE")
-    if env_text("ZEUS_URL") and env_auth in _AUTH_MODES:
-        auth = env_auth
-    elif env_auth in _AUTH_MODES and auth not in _AUTH_MODES:
-        auth = env_auth
-    return auth if auth in _AUTH_MODES else "basic"
+    if env_auth in _AUTH_MODES:
+        return env_auth
+    file_auth = (raw or "").strip()
+    if file_auth in _AUTH_MODES:
+        return file_auth
+    return "basic"
 
 
-def _llm_base_url(llm: dict, provider: dict) -> str:
+def _llm_base_url(llm: dict) -> str:
     base_url = env_text("LLM_BASE_URL")
     if not base_url:
-        raw = str(llm.get("base_url") or provider.get("base_url") or "")
+        raw = str(llm.get("base_url") or "")
         base_url = "" if raw == "LLM_BASE_URL" else raw
     return (base_url or "https://api.x.ai/v1").rstrip("/")
 
 
-def _llm_model(llm: dict, provider: dict) -> str:
+def _llm_model(llm: dict) -> str:
     model = env_text("LLM_MODEL")
     if model:
         return model
     raw = str(llm.get("model") or "").strip()
     if raw and raw != "LLM_MODEL":
         return raw
-    models = provider.get("models") or []
-    if models:
-        picked = str(models[0]).strip()
-        if picked and picked != "LLM_MODEL":
-            return picked
     return "grok-4.5-latest"
 
 
-def _mode(data: dict, settings: dict) -> str:
+def _mode(settings: dict) -> str:
     env_mode = env_text("ZEUS_MODE")
     if env_mode:
         return env_mode
-    raw = str(settings.get("mode") or data.get("default_mode") or "").strip()
+    raw = str(settings.get("mode") or "").strip()
     if raw and raw != "ZEUS_MODE":
         return raw
     return "analytics"
@@ -134,10 +127,12 @@ def resolve_document(raw: dict) -> dict:
     if not isinstance(raw, dict):
         return {}
     data = json.loads(json.dumps(raw))
+    data.pop("llm_provider", None)
+    data.pop("default_mode", None)
     zeus = data.get("zeus") if isinstance(data.get("zeus"), dict) else {}
+    zeus.pop("scope_credentials", None)
     settings = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     llm = data.get("llm") if isinstance(data.get("llm"), dict) else {}
-    provider = data.get("llm_provider") if isinstance(data.get("llm_provider"), dict) else {}
 
     url = env_text("ZEUS_URL") or str(zeus.get("url") or "")
     if url == "ZEUS_URL":
@@ -151,28 +146,15 @@ def resolve_document(raw: dict) -> dict:
     if username:
         zeus["username"] = username
     _drop_secret_fields(zeus)
-    creds = zeus.get("scope_credentials")
-    if isinstance(creds, dict):
-        for entry in creds.values():
-            if isinstance(entry, dict):
-                entry.pop("password", None)
-                entry.pop("bearer_token", None)
 
-    mode = _mode(data, settings)
-    settings["mode"] = mode
-    if str(data.get("default_mode") or "") in {"", "ZEUS_MODE"}:
-        data["default_mode"] = mode
+    settings["mode"] = _mode(settings)
 
-    llm["base_url"] = _llm_base_url(llm, provider)
-    llm["model"] = _llm_model(llm, provider)
-    llm["api_key_env"] = str(llm.get("api_key_env") or provider.get("api_key_env") or "LLM_API_KEY")
+    llm["base_url"] = _llm_base_url(llm)
+    llm["model"] = _llm_model(llm)
+    llm["api_key_env"] = str(llm.get("api_key_env") or "LLM_API_KEY")
     if not llm.get("provider"):
-        llm["provider"] = str(provider.get("label") or "xai")
+        llm["provider"] = "xai"
     _drop_secret_fields(llm)
-    _drop_secret_fields(provider)
-    if provider:
-        provider["base_url"] = llm["base_url"]
-        data["llm_provider"] = provider
 
     target = data.get("target") if isinstance(data.get("target"), dict) else {}
     if env_text("ZEUS_BUCKET"):
@@ -223,13 +205,63 @@ def _cache_token() -> tuple:
     )
 
 
+_runtime = None
+_runtime_token: tuple | None = None
+
+
+def build_runtime(resolved: dict):
+    """ZeusRuntime wired the way beer search is: HTTP Zeus, LLM, and catalog.
+
+    ``resolved`` must already have real auth mode, URL, and model. The runtime
+    reads ``password_env`` and ``api_key_env`` from the environment itself.
+    """
+    from zeus_client import ZeusRuntime
+    from zeus_client.adapters.catalog_fs.store import FsCatalogStore
+    from zeus_client.adapters.llm_openai_compatible import OpenAICompatibleLlmClient
+    from zeus_client.adapters.zeus_http import HttpxZeusPort
+    from zeus_client.adapters.zeus_http.catalog_remote import HttpxCatalogRemote
+    from zeus_client.config.loader import config_from_mapping
+
+    cfg = config_from_mapping(resolved, profile=str(resolved.get("profile") or "development"))
+    rt = ZeusRuntime(cfg)
+    secrets = rt.services.secrets
+    rt.services.zeus = HttpxZeusPort(
+        endpoint=rt.config.zeus,
+        secrets=secrets,
+        journal=rt.journal,
+    )
+    rt.services.llm = OpenAICompatibleLlmClient(
+        config=rt.config.llm,
+        secrets=secrets,
+        journal=rt.journal,
+    )
+    rt.services.catalog = FsCatalogStore(root=PROJECT_ROOT / "data" / "chat_requests")
+    rt.services.catalog_remote = HttpxCatalogRemote(
+        endpoint=rt.config.zeus,
+        secrets=secrets,
+    )
+    return rt
+
+
+async def get_runtime():
+    """Process-wide runtime. Rebuild when the config token changes."""
+    global _runtime, _runtime_token
+    resolved = await load_config()
+    token = _cached_token
+    if _runtime is not None and token == _runtime_token:
+        return _runtime
+    _runtime = build_runtime(resolved)
+    _runtime_token = token
+    return _runtime
+
+
 async def load_config() -> dict:
     """Resolve config.json once per process for the current env and file."""
-    global _cached, _cache_token
+    global _cached, _cached_token
     token = _cache_token()
-    if _cached is not None and token == _cache_token:
+    if _cached is not None and token == _cached_token:
         return _cached
     resolved = resolve_document(_read_config())
     _cached = resolved
-    _cache_token = token
+    _cached_token = token
     return resolved

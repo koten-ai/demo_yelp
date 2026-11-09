@@ -230,7 +230,7 @@ def test_resolved_document_ignores_inline_llm_key(monkeypatch) -> None:
     assert written["llm"]["model"] == "grok-4.5-latest"
     assert written["llm"]["base_url"] == "https://api.x.ai/v1"
     assert "api_key" not in written["llm"]
-    assert "api_key" not in written["llm_provider"]
+    assert "llm_provider" not in written
     assert written["settings"]["mode"] == "analytics"
 
 
