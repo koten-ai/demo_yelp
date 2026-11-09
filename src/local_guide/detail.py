@@ -8,10 +8,52 @@ from typing import Any
 
 from local_guide.chat_store import CHATS
 from local_guide.n1ql_hydrate import n1ql_hydrate_keys, query_service_from_env
-from local_guide.runtime_factory import get_runtime
 from local_guide.search import run_search
+from local_guide.zeus_config import get_runtime
 
 logger = logging.getLogger("local_guide.detail")
+
+
+class CouchbaseQueryConfig:
+    """Query-service hydrate settings. Env wins over the JSON mapping."""
+
+    def __init__(self, query_url: str, username: str = "Administrator", password: str = ""):
+        self.query_url = query_url
+        self.username = username
+        self.password = password
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw,
+        *,
+        zeus_url: str = "",
+        allow_host_default: bool = True,
+    ):
+        import os
+        from urllib.parse import urlparse
+
+        mapping = dict(raw or {})
+        query_url = (
+            (os.environ.get("COUCHBASE_QUERY_URL") or "").strip()
+            or str(mapping.get("query_url") or "").strip()
+        )
+        if not query_url and allow_host_default and zeus_url:
+            parsed = urlparse(zeus_url.rstrip("/"))
+            host = parsed.hostname or "127.0.0.1"
+            query_url = f"http://{host}:8093"
+        if not query_url:
+            return None
+        username = (
+            (os.environ.get("COUCHBASE_USERNAME") or "").strip()
+            or str(mapping.get("username") or "Administrator").strip()
+        )
+        if os.environ.get("COUCHBASE_PASSWORD") is not None:
+            password = os.environ.get("COUCHBASE_PASSWORD")
+        else:
+            password = mapping.get("password", "")
+        return cls(query_url=query_url.rstrip("/"), username=username, password=str(password))
+
 
 _GOOD_BAD = re.compile(
     r"(?is)\*\*\s*(the\s+good|good|pros)\s*\*\*\s*:?\s*(.+?)(?=\*\*\s*(the\s+bad|bad|cons|best)|$)"

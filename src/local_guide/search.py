@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
 from dataclasses import replace
@@ -15,7 +14,7 @@ from local_guide.answer_parser import parse_markdown_answer, structured_answer_t
 from local_guide.chat_store import CHATS, chat_lock, persist_chat
 from local_guide.chat_trace import inspector_envelope
 from local_guide.results_parser import extract_businesses
-from local_guide.runtime_factory import get_runtime
+from local_guide.zeus_config import env_text, get_runtime
 
 logger = logging.getLogger("local_guide.search")
 
@@ -246,7 +245,6 @@ def _compose_turn(
         "target": envelope["target"],
         "api_version": "v2",
         "mode": mode,
-        "base_id": None,
         "model": model,
         "provider": provider_id,
         "zeus_connection": "default",
@@ -331,7 +329,7 @@ def _remember_turn(chat_id: str, query: str, body: dict, store: dict) -> None:
 
 
 async def _open_runtime():
-    if not (os.environ.get("LLM_API_KEY") or "").strip():
+    if not env_text("LLM_API_KEY"):
         raise ValueError("LLM_API_KEY is not set (set it in .env, not config.json)")
     rt = await get_runtime()
     if not (rt.config.zeus.url or "").rstrip("/"):

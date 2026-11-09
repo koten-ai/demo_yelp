@@ -109,3 +109,46 @@ def test_extract_from_hops_when_tool_calls_absent():
     cards = extract_businesses(trace)
     assert len(cards) == 1
     assert cards[0]["name"] == "Hop Cafe"
+
+
+def test_extract_nested_pipeline_rows():
+    """Zeus pipeline hops wrap businesses at result_json.data.rows.rows."""
+    trace = {
+        "tool_calls": [
+            {
+                "result_json": {
+                    "summary": "Top pizza places in Tampa",
+                    "data": {
+                        "meta": {"took_ms": 12},
+                        "job_fingerprint": {"kind": "pipeline"},
+                        "status": "ok",
+                        "warnings": [
+                            {"at_step": "search", "code": "partial", "message": "truncated"}
+                        ],
+                        "rows": {
+                            "doc_keys": ["biz:oggi"],
+                            "node_ids": ["file::abc"],
+                            "rows": [
+                                {
+                                    "name": "Oggi Italian",
+                                    "city": "Tampa",
+                                    "state": "FL",
+                                    "stars": 4.5,
+                                    "review_count": 100,
+                                    "doc_key": "biz:oggi",
+                                    "id": "file::abc",
+                                    "node_id": "file::abc",
+                                    "is_open": 1,
+                                }
+                            ],
+                        },
+                    },
+                }
+            }
+        ]
+    }
+    cards = extract_businesses(trace)
+    assert len(cards) == 1
+    assert cards[0]["name"] == "Oggi Italian"
+    assert cards[0]["city"] == "Tampa"
+    assert cards[0]["business_id"] == "biz:oggi"

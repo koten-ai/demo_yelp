@@ -96,14 +96,14 @@ def test_readme_documents_the_debug_chat_trace() -> None:
 
 
 def test_apply_config_sentinels_rewrites_names_and_keeps_password_env(monkeypatch) -> None:
-    from local_guide.runtime_factory import apply_config_sentinels
+    from local_guide.zeus_config import resolve_document
 
     monkeypatch.setenv("ZEUS_AUTH_MODE", "basic")
     monkeypatch.setenv("ZEUS_USERNAME", "demo_1")
     monkeypatch.delenv("ZEUS_MODE", raising=False)
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
-    doc = apply_config_sentinels(
+    doc = resolve_document(
         {
             "zeus": {
                 "auth_mode": "ZEUS_AUTH_MODE",

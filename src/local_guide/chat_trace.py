@@ -44,23 +44,27 @@ def debug_query_enabled(value: object | None) -> bool:
 def trace_payload(result: Any) -> dict[str, Any]:
     """Widget trace from public_trace. Hops copy only when that trace has none."""
     debug = result.debug
-    raw = debug.public_trace if isinstance(debug.public_trace, Mapping) else {}
-    trace: dict[str, Any] = dict(raw)
-    if debug.notes:
+    raw_public = getattr(debug, "public_trace", None)
+    trace: dict[str, Any] = dict(raw_public) if isinstance(raw_public, Mapping) else {}
+    notes = getattr(debug, "notes", None) or ()
+    if notes:
         existing = list(trace.get("notes") or [])
-        for note in debug.notes:
+        for note in notes:
             if note not in existing:
                 existing.append(note)
         trace["notes"] = existing
-    if isinstance(debug.detective, Mapping):
-        trace["detective"] = dict(debug.detective)
-    if debug.preferred_req_id:
+    detective = getattr(debug, "detective", None)
+    if isinstance(detective, Mapping):
+        trace["detective"] = dict(detective)
+    preferred = getattr(debug, "preferred_req_id", None)
+    if preferred:
         raw_sess = trace.get("session")
         sess = dict(raw_sess) if isinstance(raw_sess, Mapping) else {}
-        sess["preferred_req_id"] = debug.preferred_req_id
+        sess["preferred_req_id"] = preferred
         trace["session"] = sess
-    if debug.hops and not trace.get("hops"):
-        trace["hops"] = [dict(hop) for hop in debug.hops if isinstance(hop, Mapping)]
+    hops = getattr(debug, "hops", None)
+    if hops and not trace.get("hops"):
+        trace["hops"] = [dict(hop) for hop in hops if isinstance(hop, Mapping)]
     return trace
 
 

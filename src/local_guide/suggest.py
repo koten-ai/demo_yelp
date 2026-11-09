@@ -99,7 +99,7 @@ async def run_suggest(query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, An
     try:
         from zeus_client import SuggestOptions
 
-        from local_guide.runtime_factory import get_runtime
+        from local_guide.zeus_config import get_runtime
 
         rt = await get_runtime()
         mode = rt.config.settings.mode or "analytics"
@@ -110,6 +110,7 @@ async def run_suggest(query: str, *, limit: int = DEFAULT_LIMIT) -> dict[str, An
                 min_query_len=MIN_QUERY_LEN,
                 fts_timeout_ms=2000,
                 entity_type="Business",
+                use_n1ql_hydrate=True,
                 mode_header=mode,
             ),
         )

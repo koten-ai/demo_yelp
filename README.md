@@ -83,25 +83,25 @@ cd demo_yelp
 docker build -f Dockerfile.frontend -t local-guide-frontend .
 ```
 
-nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. The current SPA never requests those paths.
+nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. Ask AI posts `/api/search` through that proxy. Home, Explore, and business detail do not.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BACKEND_UPSTREAM` | `http://backend:5000` | nginx `proxy_pass` target (no trailing slash) |
 | `NGINX_ENVSUBST_FILTER` | `BACKEND_` | Limit envsubst to backend knobs |
 
-`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. That API container is unused by this UI. Compose still expects `config.json` and a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** with `VITE_API_PROXY` set; the dev server ignores that variable and still serves the local catalog.
+`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. Ask AI on that UI calls the API. Home, Explore, and business detail stay on the bundled catalog. Compose bind-mounts `./.env` read-only (no `env_file`, so a `$` in `ZEUS_PASSWORD` stays literal) and still expects a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** with `VITE_API_PROXY` set; the dev server ignores that variable and still serves the local catalog.
 
 ```bash
 # UI image only — see docker build above.
 
 # Full compose stack (Zeus API + nginx UI)
-cp config.example.json config.json   # fill keys if you want the API process to start
+cp .env.example .env   # set LLM_API_KEY and ZEUS_PASSWORD; do not put them in config.json
 DOCKER_BUILDKIT=1 docker compose up --build
 ```
 
 - nginx UI: http://localhost:3000
-- API (unused by the SPA): http://localhost:5000
+- API (Ask AI): http://localhost:5000
 - Vite profile `dev`: http://localhost:5173
 
 ## Project layout
@@ -112,17 +112,18 @@ demo_yelp/
 │   ├── src/data/catalog.json
 │   ├── src/api/client.ts     # in-browser search, reviews, insight
 │   └── public/business-images/
-├── src/local_guide/          # FastAPI + Zeus client (not called by the SPA)
+├── src/local_guide/          # FastAPI + Zeus client (Ask AI)
 ├── scripts/                  # image upload / finalize helpers
 ├── docker/                   # nginx template for Dockerfile.frontend
 ├── Dockerfile.frontend
 ├── Dockerfile.backend
 ├── tests/                    # Python API tests
-├── config.example.json
+├── .env.example              # copy to .env; secret lines stay empty
+├── config.json               # secret-free sentinels (no API key)
 └── docker-compose.yml
 ```
 
-## Python API (not called by the SPA)
+## Python API
 
 `src/local_guide` is still a FastAPI app over the Couchbase `yelp-demo` bucket via [`kotenai-zeus-client`](../zeus_client_python) (`run_agent`, `run_search`, `run_verb` / `run_find`). `pyproject.toml` depends on the sibling checkout `file:../zeus_client_python`. The Docker release target still installs git tag `0.3.0-alpha` until a `0.3.1` tag exists. `pytest` covers this package, not the SPA.
 
@@ -140,27 +141,32 @@ Ask AI is the only screen that calls the agent. Open the SPA with `?debug=true` 
 
 The script URL is `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus_client_chat_trace/latest/zeus_client_chat_trace.js`. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The bundle is not vendored into `src/local_guide/static/`.
 
+`config.json` is committed and secret-free. Copy `.env.example` to `.env`, then set `LLM_API_KEY` and `ZEUS_PASSWORD`. Do not put the API key or the Zeus password in `config.json`. The file stores env **names** (`zeus.password_env` = `ZEUS_PASSWORD`, `llm.api_key_env` = `LLM_API_KEY`) and sentinels (`zeus.auth_mode` = `ZEUS_AUTH_MODE`, `zeus.username` = `ZEUS_USERNAME`, `settings.mode` = `ZEUS_MODE`, `llm.base_url` = `LLM_BASE_URL`, `llm.model` = `LLM_MODEL`). The data target is `yelp-demo` / `_default` / `_default`.
+
 To run the API anyway:
 
 ```bash
 cd demo_yelp
-cp config.example.json config.json
-# edit config.json: llm_provider.api_key, zeus url/password
+cp .env.example .env
+# set LLM_API_KEY and ZEUS_PASSWORD in .env
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ../zeus_client_python
 pip install -e ".[dev]" --no-deps
 python -m local_guide    # http://localhost:5000
 ```
 
-| Setting | Description |
-|---------|-------------|
-| `zeus.url` | Zeus base URL (`ZEUS_URL` overrides). `config.example.json` uses `http://host.docker.internal:8080` |
-| `zeus.scope_credentials["yelp-demo/_default"]` | Basic auth for the sample scope |
-| `default_mode` | Agent mode. `analytics` in `config.example.json` (deploy pins analytics + `default_base_id=base-6.1`) |
-| `default_base_id` | Catalog pin passed to `run_agent` (`base-6.1` loads `chat_request_analytics_base-6.1.json`) |
-| `base_catalog_dirs` | Directories searched for that pinned catalog file (`/app/base_catalogs` in the example) |
-| `default_sample` | `yelp-demo` |
-| `llm_provider.api_key` | Required for agent turns |
+| Name | Description |
+|------|-------------|
+| `ZEUS_URL` | Zeus base URL. Compose sets `http://host.docker.internal:8080`, which wins over `.env` |
+| `ZEUS_AUTH_MODE` | `basic` or `bearer`. Replaces the `ZEUS_AUTH_MODE` sentinel when `ZEUS_URL` is set |
+| `ZEUS_USERNAME` | Basic auth user (`demo_1` in `.env.example`) |
+| `ZEUS_PASSWORD` | Basic auth password. Only the name `ZEUS_PASSWORD` is stored in `config.json` |
+| `ZEUS_BUCKET` / `ZEUS_SCOPE` / `ZEUS_COLLECTION` | `yelp-demo` / `_default` / `_default` |
+| `ZEUS_MODE` | Agent mode. Replaces the `ZEUS_MODE` sentinel. `.env.example` uses `analytics` |
+| `LLM_BASE_URL` | Replaces the `LLM_BASE_URL` sentinel (`https://api.x.ai/v1` in `.env.example`) |
+| `LLM_MODEL` | Replaces the `LLM_MODEL` sentinel (`grok-4.5-latest` in `.env.example`) |
+| `LLM_API_KEY` | Required for agent turns. Set it in `.env`, not in `config.json` |
+| `COUCHBASE_QUERY_URL` / `COUCHBASE_USERNAME` / `COUCHBASE_PASSWORD` | N1QL hydrate for suggest and business detail |
 
 ```bash
 pytest -q
@@ -168,7 +174,7 @@ pytest -q
 
 | Symptom | Fix |
 |---------|-----|
-| `no Zeus URL configured` | Set `zeus.url` or `ZEUS_URL` |
-| `llm_provider has no api_key` | Edit `config.json` |
+| `no Zeus URL configured` | Set `ZEUS_URL` |
+| `LLM_API_KEY is not set` | Set `LLM_API_KEY` in `.env` |
 | Docker API cannot reach Zeus | Use `host.docker.internal` |
 | SPA has no photos | Files belong under `frontend/public/business-images/biz:<id>/{1,2,3}.png` |

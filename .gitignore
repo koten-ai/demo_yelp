@@ -4,7 +4,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-config.json
 data/chats.jsonl
 data/chat_requests/**
 !data/chat_requests/.gitkeep
