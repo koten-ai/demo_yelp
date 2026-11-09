@@ -241,6 +241,76 @@ async def test_search_request_flag_overrides_ai_process_result(monkeypatch):
     assert runtime.agent.run_turn.await_args.kwargs["enable_sessions"] is False
 
 
+@pytest.mark.asyncio
+async def test_search_fills_coordinates_when_the_card_has_none(monkeypatch):
+    from local_guide import search as search_mod
+
+    _set_search_env(monkeypatch)
+    settings = ClientSettings(mode="analytics", durable_sessions=False, max_rounds=12)
+    runtime = _fake_runtime(settings)
+    card = {
+        "name": "Thunder Mug Cafe",
+        "business_id": "dc98lqGzBSpZZExT_LSiCA",
+        "city": "Philadelphia",
+    }
+
+    async def fake_get_runtime():
+        return runtime
+
+    seen: dict = {}
+
+    async def fake_hydrate(cb, bucket, scope, collection, keys, *, fields=(), timeout_s=15.0):
+        seen["keys"] = list(keys)
+        seen["bucket"] = bucket
+        seen["fields"] = fields
+        return [
+            {
+                "doc_key": "biz:yelp:dc98lqGzBSpZZExT_LSiCA",
+                "business_id": "dc98lqGzBSpZZExT_LSiCA",
+                "latitude": 40.009,
+                "longitude": -75.194,
+            }
+        ]
+
+    monkeypatch.setattr(search_mod, "get_runtime", fake_get_runtime)
+    monkeypatch.setattr(search_mod, "persist_chat", AsyncMock())
+    monkeypatch.setattr(search_mod, "extract_businesses", lambda _t: [card])
+    monkeypatch.setattr(search_mod, "parse_markdown_answer", lambda _a: None)
+    monkeypatch.setattr(search_mod, "n1ql_hydrate_keys", fake_hydrate)
+    monkeypatch.setattr(
+        search_mod,
+        "query_service_from_env",
+        lambda: SimpleNamespace(query_url="http://couchbase:8093", username="u", password="p"),
+    )
+
+    out = await search_mod._search_async("cafe", None, ai_process_result=False)
+
+    assert seen["keys"] == ["biz:yelp:dc98lqGzBSpZZExT_LSiCA"]
+    assert seen["bucket"] == "yelp-demo"
+    assert out["results"][0]["latitude"] == "40.009"
+    assert out["results"][0]["longitude"] == "-75.194"
+    assert out["structured_response"]["zeus_data"][0]["latitude"] == "40.009"
+
+
+@pytest.mark.asyncio
+async def test_coordinate_hydrate_logs_when_the_query_service_is_unset(monkeypatch, caplog):
+    from local_guide import search as search_mod
+
+    monkeypatch.setattr(search_mod, "query_service_from_env", lambda: None)
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            target=SimpleNamespace(bucket="yelp-demo", scope="_default", collection="_default")
+        )
+    )
+    cards = [{"name": "Thunder Mug Cafe", "business_id": "dc98lqGzBSpZZExT_LSiCA"}]
+
+    with caplog.at_level("WARNING"):
+        await search_mod._attach_coordinates(runtime, cards)
+
+    assert "latitude" not in cards[0]
+    assert any("COUCHBASE_QUERY_URL is unset" in rec.message for rec in caplog.records)
+
+
 def test_auth_mode_prefers_env_then_file(monkeypatch):
     from local_guide.zeus_config import resolve_document
 

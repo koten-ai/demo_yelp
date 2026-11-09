@@ -14,6 +14,12 @@ from zeus_client.domain.floor import assert_floor_allows
 from local_guide.answer_parser import parse_markdown_answer, structured_answer_to_results
 from local_guide.chat_store import CHATS, chat_lock, persist_chat
 from local_guide.chat_trace import inspector_envelope
+from local_guide.n1ql_hydrate import (
+    apply_coordinate_rows,
+    business_doc_keys,
+    n1ql_hydrate_keys,
+    query_service_from_env,
+)
 from local_guide.results_parser import extract_businesses
 from local_guide.zeus_config import env_text, get_runtime
 
@@ -340,6 +346,57 @@ async def _open_runtime():
     return rt
 
 
+async def _attach_coordinates(rt, cards: list) -> None:
+    """Fill latitude/longitude from source docs when the agent card omitted them.
+
+    The map only draws a pin when both values are present. Search traces often
+    carry name and city without coordinates; those fields live on the business doc.
+    A miss leaves the cards unchanged so search still returns.
+    """
+    if not cards:
+        return
+    pending = [
+        card
+        for card in cards
+        if isinstance(card, dict)
+        and str(card.get("business_id") or "").strip()
+        and not (str(card.get("latitude") or "").strip() and str(card.get("longitude") or "").strip())
+    ]
+    if not pending:
+        return
+    cb = query_service_from_env()
+    target = rt.config.target
+    bucket = str(getattr(target, "bucket", "") or "").strip()
+    scope = str(getattr(target, "scope", "") or "_default").strip() or "_default"
+    collection = str(getattr(target, "collection", "") or "_default").strip() or "_default"
+    if cb is None or not bucket:
+        logger.warning(
+            "coordinate hydrate skipped: %s",
+            "COUCHBASE_QUERY_URL is unset" if cb is None else "search target bucket is unset",
+        )
+        return
+    keys: list[str] = []
+    seen: set[str] = set()
+    for card in pending:
+        for key in business_doc_keys(str(card.get("business_id") or "")):
+            if key not in seen:
+                seen.add(key)
+                keys.append(key)
+    if not keys:
+        return
+    rows = await n1ql_hydrate_keys(
+        cb,
+        bucket,
+        scope,
+        collection,
+        keys,
+        fields=("business_id", "latitude", "longitude"),
+    )
+    filled = apply_coordinate_rows(cards, rows)
+    if filled:
+        logger.info("filled coordinates on %d search cards", filled)
+
+
 def _catalog_text(doc: dict) -> str:
     messages = doc.get("messages") if isinstance(doc.get("messages"), list) else []
     if messages and isinstance(messages[0], dict):
@@ -492,6 +549,9 @@ async def _rewind_search(
         prior_round=0,
         catalog_note=catalog_note,
     )
+    results = body.get("results")
+    if isinstance(results, list):
+        await _attach_coordinates(rt, results)
     return body
 
 
@@ -554,6 +614,9 @@ async def _search_async(
             prior_round=prior_round,
             catalog_note=catalog_note,
         )
+        results = body.get("results")
+        if isinstance(results, list):
+            await _attach_coordinates(rt, results)
         _remember_turn(chat_id, query, body, store)
         await persist_chat(chat_id)
         return body

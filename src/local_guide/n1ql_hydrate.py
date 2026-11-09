@@ -12,6 +12,83 @@ import httpx
 
 logger = logging.getLogger("local_guide.n1ql_hydrate")
 
+_YELP_DOC_PREFIX = "biz:yelp:"
+
+
+def business_doc_keys(business_id: str) -> list[str]:
+    """Source keys for one business card.
+
+    Live yelp-demo documents are ``biz:yelp:<id>``. A card that already carries
+    a different ``biz:`` key is tried after that live key.
+    """
+    bid = (business_id or "").strip()
+    if not bid:
+        return []
+    own = bid if bid.startswith("biz:") else ""
+    if bid.startswith(_YELP_DOC_PREFIX):
+        bare = bid[len(_YELP_DOC_PREFIX) :].strip()
+    elif own:
+        bare = bid[4:].strip()
+    else:
+        bare = bid
+    keys: list[str] = []
+    if bare:
+        keys.append(f"{_YELP_DOC_PREFIX}{bare}")
+    if own and own not in keys:
+        keys.append(own)
+    return keys
+
+
+def _coord_text(val: Any) -> str:
+    if val is None or isinstance(val, bool):
+        return ""
+    if isinstance(val, float):
+        if val != val:
+            return ""
+        return str(val)
+    if isinstance(val, int):
+        return str(val)
+    text = str(val).strip()
+    if text.lower() in {"", "none", "null", "nan"}:
+        return ""
+    return text
+
+
+def apply_coordinate_rows(cards: list[dict[str, Any]], rows: list[dict[str, Any]]) -> int:
+    """Copy latitude and longitude from source rows onto cards that lack both.
+
+    Rows are matched by ``doc_key`` only. For each card, the first
+    ``business_doc_keys`` entry that has both coordinates wins.
+    """
+    by_key: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        doc_key = str(row.get("doc_key") or "").strip()
+        lat = _coord_text(row.get("latitude"))
+        lon = _coord_text(row.get("longitude"))
+        if not doc_key or not lat or not lon:
+            continue
+        by_key.setdefault(doc_key, (lat, lon))
+
+    filled = 0
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        if _coord_text(card.get("latitude")) and _coord_text(card.get("longitude")):
+            continue
+        bid = str(card.get("business_id") or "").strip()
+        if not bid:
+            continue
+        for key in business_doc_keys(bid):
+            hit = by_key.get(key)
+            if hit is None:
+                continue
+            card["latitude"], card["longitude"] = hit
+            filled += 1
+            break
+    return filled
+
 
 @dataclass(frozen=True)
 class QueryService:

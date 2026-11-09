@@ -1,3 +1,4 @@
+from local_guide.n1ql_hydrate import apply_coordinate_rows, business_doc_keys
 from local_guide.results_parser import extract_businesses, zeus_data_to_results
 
 
@@ -152,3 +153,50 @@ def test_extract_nested_pipeline_rows():
     assert cards[0]["name"] == "Oggi Italian"
     assert cards[0]["city"] == "Tampa"
     assert cards[0]["business_id"] == "biz:oggi"
+
+
+def test_business_doc_keys_prefer_the_live_yelp_key():
+    assert business_doc_keys("dc98lqGzBSpZZExT_LSiCA") == [
+        "biz:yelp:dc98lqGzBSpZZExT_LSiCA",
+    ]
+    assert business_doc_keys("biz:ZuM1vcZ_ObCjCCGweYzItg") == [
+        "biz:yelp:ZuM1vcZ_ObCjCCGweYzItg",
+        "biz:ZuM1vcZ_ObCjCCGweYzItg",
+    ]
+
+
+def test_apply_coordinate_rows_fills_cards_missing_a_pin():
+    cards = [
+        {"name": "Thunder Mug Cafe", "business_id": "dc98lqGzBSpZZExT_LSiCA", "city": "Philadelphia"},
+        {"name": "Already", "business_id": "keep", "latitude": "1", "longitude": "2"},
+    ]
+    filled = apply_coordinate_rows(
+        cards,
+        [
+            {
+                "doc_key": "biz:yelp:dc98lqGzBSpZZExT_LSiCA",
+                "business_id": "dc98lqGzBSpZZExT_LSiCA",
+                "latitude": 40.0093857912,
+                "longitude": -75.1948174462,
+            }
+        ],
+    )
+    assert filled == 1
+    assert cards[0]["latitude"] == "40.0093857912"
+    assert cards[0]["longitude"] == "-75.1948174462"
+    assert cards[1]["latitude"] == "1"
+    assert cards[1]["longitude"] == "2"
+
+
+def test_apply_coordinate_rows_skips_a_key_with_no_coordinates():
+    cards = [{"name": "Legacy", "business_id": "biz:ZuM1vcZ_ObCjCCGweYzItg"}]
+    filled = apply_coordinate_rows(
+        cards,
+        [
+            {"doc_key": "biz:yelp:ZuM1vcZ_ObCjCCGweYzItg", "latitude": None, "longitude": None},
+            {"doc_key": "biz:ZuM1vcZ_ObCjCCGweYzItg", "latitude": 1.5, "longitude": -2.5},
+        ],
+    )
+    assert filled == 1
+    assert cards[0]["latitude"] == "1.5"
+    assert cards[0]["longitude"] == "-2.5"

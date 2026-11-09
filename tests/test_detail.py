@@ -356,7 +356,10 @@ async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
             raise AssertionError(f"unexpected verb {name}")
 
     async def fake_n1ql(cb, bucket, scope, collection, keys, **kwargs):
-        assert keys == ["biz:-4dYswJy7SPcbcERvitmIg"]
+        assert keys == [
+            "biz:yelp:-4dYswJy7SPcbcERvitmIg",
+            "biz:-4dYswJy7SPcbcERvitmIg",
+        ]
         assert bucket == "yelp-data"
         return [
             {

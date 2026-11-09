@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 from local_guide.chat_store import CHATS
-from local_guide.n1ql_hydrate import n1ql_hydrate_keys, query_service_from_env
+from local_guide.n1ql_hydrate import business_doc_keys, n1ql_hydrate_keys, query_service_from_env
 from local_guide.search import run_search
 from local_guide.zeus_config import get_runtime
 
@@ -787,10 +787,7 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
         }
 
     node_ids, doc_keys = _find_result_keys(find_res.body)
-    # Prefer stable biz: source keys for N1QL when find items omitted them.
     prefer_key = _biz_doc_key(raw_id, bare)
-    if prefer_key and prefer_key not in doc_keys:
-        doc_keys = [prefer_key, *doc_keys]
 
     find_item: dict[str, Any] | None = None
     body = find_res.body if isinstance(find_res.body, dict) else {}
@@ -808,20 +805,28 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     bucket, scope, collection = _target_triple(rt)
     cb = query_service_from_env()
 
-    keys_for_n1ql = [k for k in doc_keys if k.startswith("biz:")] or (
-        [prefer_key] if prefer_key.startswith("biz:") else []
-    )
+    keys_for_n1ql: list[str] = []
+    for key in [*business_doc_keys(raw_id or bare), *doc_keys]:
+        if key.startswith("biz:") and key not in keys_for_n1ql:
+            keys_for_n1ql.append(key)
     if keys_for_n1ql and cb is not None:
         try:
-            rows = await n1ql_hydrate_keys(
+            fetched_rows = await n1ql_hydrate_keys(
                 cb,
                 bucket,
                 scope,
                 collection,
-                keys_for_n1ql[:1],
+                keys_for_n1ql,
                 fields=_BUSINESS_N1QL_FIELDS,
             )
-            if rows:
+            by_key = {
+                str(row.get("doc_key") or ""): row
+                for row in fetched_rows
+                if isinstance(row, dict)
+            }
+            picked = next((by_key[key] for key in keys_for_n1ql if key in by_key), None)
+            if picked is not None:
+                rows = [picked]
                 source = "zeus_find+n1ql"
                 sources.append("n1ql_hydrate")
         except Exception as e:
