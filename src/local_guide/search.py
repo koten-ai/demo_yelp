@@ -9,6 +9,7 @@ from dataclasses import replace
 import httpx
 from zeus_client import TurnStatus, user_facing_answer
 from zeus_client.domain.errors import ZeusClientError
+from zeus_client.domain.floor import assert_floor_allows
 
 from local_guide.answer_parser import parse_markdown_answer, structured_answer_to_results
 from local_guide.chat_store import CHATS, chat_lock, persist_chat
@@ -208,6 +209,7 @@ def _compose_turn(
     ai_process_result: bool,
     prior_sid: str,
     prior_round: int,
+    catalog_note: str,
 ) -> tuple[dict, dict]:
     """API body plus the fields a stored turn writes. Does not touch CHATS."""
     cfg = rt.config
@@ -223,6 +225,7 @@ def _compose_turn(
         mode=mode,
         model=model,
         provider=provider_id,
+        extra_notes=(catalog_note,),
     )
     trace = envelope["trace"]
     raw_answer = result.answer or ""
@@ -337,13 +340,73 @@ async def _open_runtime():
     return rt
 
 
+def _catalog_text(doc: dict) -> str:
+    messages = doc.get("messages") if isinstance(doc.get("messages"), list) else []
+    if messages and isinstance(messages[0], dict):
+        return str(messages[0].get("content") or "")
+    return ""
+
+
+def _catalog_base_id(doc: dict) -> str:
+    for key in ("_lineage", "_base_meta"):
+        raw = doc.get(key)
+        if isinstance(raw, dict):
+            base = str(raw.get("base_id") or "").strip()
+            if base:
+                return base
+    return ""
+
+
+def _catalog_note(doc: dict, req_id: str) -> str:
+    note = "chat_request: live /v1/ai/chat_request.json"
+    base = _catalog_base_id(doc)
+    if base:
+        note += f" base_id={base}"
+    if req_id:
+        note += f" req_id={req_id}"
+    return note
+
+
+async def _live_catalog(rt) -> tuple[dict, str]:
+    """Zeus ``GET /v1/ai/chat_request.json`` for this target. That document is the turn catalog.
+
+    The on-disk pack is a frozen base. Search does not load it. The request id
+    is copied here, before any later await, because the remote is process-wide.
+    """
+    cfg = rt.config
+    target = cfg.target
+    mode = str(cfg.settings.mode or "analytics")
+    remote = rt.services.catalog_remote
+    if remote is None:
+        raise RuntimeError("catalog remote is not configured")
+    headers = await rt.catalog._auth_headers(target)
+    doc = await remote.fetch_chat_request(target.bucket, target.scope, mode, headers=headers)
+    req_id = str(getattr(remote, "last_req_id", "") or "")
+    if not isinstance(doc, dict):
+        raise RuntimeError(
+            f"live catalog for {target.bucket}/{target.scope} mode {mode} was not a JSON object"
+        )
+    text = _catalog_text(doc)
+    if "## SCOPE BRIEF" not in text or "## MINI-SCHEMA" not in text:
+        raise RuntimeError(
+            f"live catalog for {target.bucket}/{target.scope} mode {mode} "
+            "has no scope brief or mini-schema"
+        )
+    assert_floor_allows(
+        client_floor=str(cfg.client_floor or ""),
+        base_id=_catalog_base_id(doc) or None,
+        allow_degraded=bool(getattr(cfg, "allow_degraded_catalog", False)),
+    )
+    return doc, _catalog_note(doc, req_id)
+
+
 async def _run_turn(rt, *, message: str, chat_id: str, ai_process_result: bool, rewind: bool, prior_messages: tuple):
     cfg = rt.config
     settings = cfg.settings
     if bool(ai_process_result) != bool(settings.ai_process_result):
         settings = replace(settings, ai_process_result=bool(ai_process_result))
     try:
-        await rt.catalog.load_for_turn(settings.mode, target=cfg.target)
+        chat_request, catalog_note = await _live_catalog(rt)
         result = await rt.agent.run_turn(
             message,
             target=cfg.target,
@@ -353,13 +416,14 @@ async def _run_turn(rt, *, message: str, chat_id: str, ai_process_result: bool, 
             enable_sessions=bool(settings.durable_sessions),
             prior_messages=prior_messages,
             rewind=bool(rewind),
+            chat_request=chat_request,
         )
     except ZeusClientError as exc:
         raise RuntimeError(exc.public_message or str(exc)) from exc
     if result.status in {TurnStatus.ERROR, TurnStatus.REFUSED}:
         err = getattr(result.error, "message", None) or "agent turn failed"
         raise RuntimeError(str(err))
-    return result
+    return result, catalog_note
 
 
 async def run_search(
@@ -409,7 +473,7 @@ async def _rewind_search(
     rt = await _open_runtime()
     message = query.strip()
     chat_id = chat_id or ("yelp_" + uuid.uuid4().hex[:12])
-    result = await _run_turn(
+    result, catalog_note = await _run_turn(
         rt,
         message=message,
         chat_id=chat_id,
@@ -426,6 +490,7 @@ async def _rewind_search(
         ai_process_result=ai_process_result,
         prior_sid="",
         prior_round=0,
+        catalog_note=catalog_note,
     )
     return body
 
@@ -470,7 +535,7 @@ async def _search_async(
             CHATS[chat_id]["zeus_round"] = 0
 
         prior_messages = tuple(turn for turn in prior_turns if isinstance(turn, dict))
-        result = await _run_turn(
+        result, catalog_note = await _run_turn(
             rt,
             message=message,
             chat_id=chat_id,
@@ -487,6 +552,7 @@ async def _search_async(
             ai_process_result=ai_process_result,
             prior_sid=prior_sid,
             prior_round=prior_round,
+            catalog_note=catalog_note,
         )
         _remember_turn(chat_id, query, body, store)
         await persist_chat(chat_id)

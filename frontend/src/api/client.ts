@@ -27,8 +27,6 @@ const AUTHORS: Array<[string, string]> = [
   ["Casey Nguyen", "89"],
 ];
 
-const lastResultsByChat = new Map<string, BusinessCard[]>();
-
 function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
@@ -77,22 +75,6 @@ function rank(query: string, pool: BusinessCard[], limit: number): BusinessCard[
     })
     .slice(0, limit)
     .map((row) => row.b);
-}
-
-function summarize(query: string, results: BusinessCard[]): string {
-  if (!results.length) {
-    return `No places matched “${query}”. Try a category, a city, or a business name.`;
-  }
-  const lines = results.slice(0, 5).map((b) => {
-    const cat = (b.categories || "").split(",")[0]?.trim() || "Local spot";
-    const where = [b.city, b.state].filter(Boolean).join(", ");
-    const rating = b.rating ? `${b.rating}★` : "unrated";
-    const reviews = b.review_count ? `, ${Number(b.review_count).toLocaleString()} reviews` : "";
-    const place = where ? ` in ${where}` : "";
-    return `- **${b.name}** — ${cat}${place} (${rating}${reviews})`;
-  });
-  const noun = results.length === 1 ? "place" : "places";
-  return [`**${results.length} ${noun}** match “${query}”.`, "", ...lines].join("\n");
 }
 
 function reviewsFor(card: BusinessCard): ReviewItem[] {
@@ -178,14 +160,14 @@ export function isAbortError(e: unknown): boolean {
   return (e as { name?: string }).name === "AbortError";
 }
 
+/** Header and search-loader count. The API counts Business documents in the database. */
 export async function fetchHealth(): Promise<HealthResponse> {
-  return {
-    ok: true,
-    app_version: "0.1.0",
-    business_count: BUSINESSES.length,
-    corpus_label: "businesses",
-    corpus_source: "sample",
-  };
+  const res = await fetch("/api/health");
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok || !body || typeof body !== "object") {
+    throw new Error(`health failed (${res.status})`);
+  }
+  return body as HealthResponse;
 }
 
 /** Soft-fail typeahead — empty results on a short query. */
@@ -232,7 +214,7 @@ function agentErrorMessage(body: unknown, status: number): string {
   return `search failed (${status})`;
 }
 
-/** Zeus agent turn. Home and Explore keep the local `search` helper. */
+/** Ask AI insight turn. Home and Explore use `search` on the same route. */
 export async function agentSearch(
   query: string,
   chatId?: string | null,
@@ -260,30 +242,34 @@ export async function agentSearch(
   return body as SearchResponse;
 }
 
+/** Home and Explore. One Zeus catalog turn. Does not mount a trace card. */
 export async function search(
   query: string,
   chatId?: string | null,
   options?: SearchOptions
 ): Promise<SearchResponse> {
   const q = query.trim();
-  await delay(420, options?.signal);
-  const refine =
-    Boolean(chatId) &&
-    lastResultsByChat.has(chatId || "") &&
-    /\b(which|those|them|these|narrow|only)\b/i.test(q);
-  const pool = refine ? lastResultsByChat.get(chatId || "") || BUSINESSES : BUSINESSES;
-  let results = rank(q, pool, 12);
-  if (refine && results.length === 0) results = rank(q, BUSINESSES, 12);
-  const id = chatId || `local-${Date.now().toString(36)}`;
-  lastResultsByChat.set(id, results);
-  const summarizeOn = options?.summarize ?? true;
-  return {
-    chat_id: id,
-    query: q,
-    answer: summarizeOn ? summarize(q, results) : "",
-    structured_answer: null,
-    results,
-  };
+  const res = await fetch("/api/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query: q,
+      chat_id: chatId || undefined,
+      ai_process_result: false,
+    }),
+    signal: options?.signal,
+  });
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(agentErrorMessage(body, res.status));
+  if (body && typeof body === "object") {
+    const err = (body as { error?: unknown }).error;
+    if (typeof err === "string" && err.trim()) throw new Error(err);
+  }
+  const data = body as SearchResponse;
+  if (options?.summarize === false) {
+    return { ...data, answer: "", structured_answer: null };
+  }
+  return data;
 }
 
 export async function fetchBusiness(businessId: string) {

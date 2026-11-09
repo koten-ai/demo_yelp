@@ -72,15 +72,36 @@ class _Result:
         self.error = None
 
 
+_LIVE_CATALOG = {
+    "messages": [
+        {
+            "role": "system",
+            "content": "## SCOPE BRIEF\nyelp\n\n## MINI-SCHEMA\nBusiness\n",
+        }
+    ],
+    "_lineage": {"base_id": "base-6.3"},
+}
+
+
 def _fake_runtime(settings: ClientSettings):
+    remote = SimpleNamespace(
+        fetch_chat_request=AsyncMock(return_value=dict(_LIVE_CATALOG)),
+        last_req_id="req-live",
+    )
     return SimpleNamespace(
         config=SimpleNamespace(
             settings=settings,
             target=DataTarget(bucket="yelp-demo", scope="_default", collection="_default"),
             llm=SimpleNamespace(model="grok-4.5-latest", provider="xai"),
             zeus=SimpleNamespace(url="http://from-env:8080"),
+            client_floor="client-floor-6.1",
+            allow_degraded_catalog=False,
         ),
-        catalog=SimpleNamespace(load_for_turn=AsyncMock()),
+        services=SimpleNamespace(catalog_remote=remote),
+        catalog=SimpleNamespace(
+            load_for_turn=AsyncMock(),
+            _auth_headers=AsyncMock(return_value={}),
+        ),
         agent=SimpleNamespace(run_turn=AsyncMock(return_value=_Result())),
     )
 
@@ -109,7 +130,7 @@ def _set_search_env(monkeypatch, *, mode: str | None = "analytics", auth: str = 
 
 
 @pytest.mark.asyncio
-async def test_search_calls_run_turn_without_frozen_catalog(monkeypatch):
+async def test_search_calls_run_turn_with_live_catalog(monkeypatch):
     from local_guide import search as search_mod
 
     _set_search_env(monkeypatch)
@@ -120,16 +141,23 @@ async def test_search_calls_run_turn_without_frozen_catalog(monkeypatch):
         mode="analytics",
     )
     runtime = _fake_runtime(settings)
+
+    async def _turn_overwrites_req_id(*_args, **_kwargs):
+        runtime.services.catalog_remote.last_req_id = "req-later"
+        return _Result()
+
+    runtime.agent.run_turn.side_effect = _turn_overwrites_req_id
     _install_search_fakes(monkeypatch, search_mod, runtime)
 
     out = await search_mod._search_async("pizza in Tampa", None, ai_process_result=False)
 
-    load_args, load_kwargs = runtime.catalog.load_for_turn.await_args
-    assert load_args == ("analytics",)
-    assert load_kwargs["target"] is runtime.config.target
+    runtime.catalog.load_for_turn.assert_not_awaited()
+    fetch = runtime.services.catalog_remote.fetch_chat_request.await_args
+    assert fetch.args == ("yelp-demo", "_default", "analytics")
     message, kwargs = runtime.agent.run_turn.await_args.args[0], runtime.agent.run_turn.await_args.kwargs
     assert message == "pizza in Tampa"
-    assert "chat_request" not in kwargs
+    assert kwargs["chat_request"]["messages"][0]["content"].startswith("## SCOPE BRIEF")
+    assert "## MINI-SCHEMA" in kwargs["chat_request"]["messages"][0]["content"]
     assert "base_id" not in kwargs
     assert kwargs["target"] is runtime.config.target
     assert kwargs["model"] == "grok-4.5-latest"
@@ -144,6 +172,28 @@ async def test_search_calls_run_turn_without_frozen_catalog(monkeypatch):
     assert out["target"] == "yelp-demo/_default/_default"
     assert out["zeus_url"] == "http://from-env:8080"
     assert out["model"] == "grok-4.5-latest"
+    note = "chat_request: live /v1/ai/chat_request.json base_id=base-6.3 req_id=req-live"
+    assert note in out["trace"]["notes"]
+    assert "req-later" not in " ".join(out["trace"]["notes"])
+
+
+@pytest.mark.asyncio
+async def test_live_catalog_rejects_a_base_above_the_client_floor(monkeypatch):
+    from local_guide import search as search_mod
+
+    _set_search_env(monkeypatch)
+    settings = ClientSettings(mode="analytics", durable_sessions=False, max_rounds=12)
+    runtime = _fake_runtime(settings)
+    runtime.config.client_floor = "client-floor-5"
+    _install_search_fakes(monkeypatch, search_mod, runtime)
+
+    out = await search_mod.run_search("pizza in Tampa", None)
+
+    assert "error" in out
+    assert "base-6.3" in out["error"]
+    assert "requires client-floor-6.1" in out["error"]
+    assert "client.floor is 'client-floor-5'" in out["error"]
+    runtime.agent.run_turn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -157,9 +207,10 @@ async def test_search_defaults_mode_analytics_when_missing(monkeypatch):
 
     out = await search_mod._search_async("coffee", None)
 
-    assert runtime.catalog.load_for_turn.await_args.args[0] == "analytics"
+    fetch = runtime.services.catalog_remote.fetch_chat_request.await_args
+    assert fetch.args == ("yelp-demo", "_default", "analytics")
     assert "base_id" not in runtime.agent.run_turn.await_args.kwargs
-    assert "chat_request" not in runtime.agent.run_turn.await_args.kwargs
+    assert "## MINI-SCHEMA" in runtime.agent.run_turn.await_args.kwargs["chat_request"]["messages"][0]["content"]
     assert runtime.agent.run_turn.await_args.kwargs["rewind"] is False
     assert out["mode"] == "analytics"
     assert out["rewind"] is False

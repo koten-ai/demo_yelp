@@ -13,21 +13,6 @@ def _clear_cache():
     corpus_mod.clear_corpus_cache()
 
 
-def test_admin_base_url_from_zeus_url(monkeypatch):
-    monkeypatch.delenv("ZEUS_ADMIN_URL", raising=False)
-    monkeypatch.delenv("ZEUS_HUB_URL", raising=False)
-    monkeypatch.delenv("ZEUS_URL", raising=False)
-    assert (
-        corpus_mod.admin_base_url("http://host.docker.internal:8080")
-        == "http://host.docker.internal:9091"
-    )
-
-
-def test_admin_base_url_explicit(monkeypatch):
-    monkeypatch.setenv("ZEUS_ADMIN_URL", "http://hub.example:9091/")
-    assert corpus_mod.admin_base_url("http://ignored:8080") == "http://hub.example:9091"
-
-
 @pytest.mark.asyncio
 async def test_resolve_prefers_config_override(monkeypatch):
     monkeypatch.setattr(
@@ -41,9 +26,9 @@ async def test_resolve_prefers_config_override(monkeypatch):
     )
 
     async def boom(*_a, **_k):
-        raise AssertionError("should not hit live admin when config override set")
+        raise AssertionError("should not query the database when a count is configured")
 
-    monkeypatch.setattr(corpus_mod, "fetch_collection_count", boom)
+    monkeypatch.setattr(corpus_mod, "fetch_business_count", boom)
     out = await corpus_mod.resolve_search_corpus(force=True)
     assert out["business_count"] == 10_000_000
     assert out["corpus_label"] == "businesses"
@@ -51,7 +36,7 @@ async def test_resolve_prefers_config_override(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_uses_live_collection_counts(monkeypatch):
+async def test_resolve_counts_business_documents(monkeypatch):
     monkeypatch.setattr(
         corpus_mod,
         "read_app_config",
@@ -68,16 +53,90 @@ async def test_resolve_uses_live_collection_counts(monkeypatch):
         },
     )
 
-    async def fake_fetch(bucket, scope, collection, **_k):
+    async def fake_business(bucket, scope, collection):
         assert bucket == "yelp-data"
         assert scope == "_default"
         assert collection == "_default"
-        return 161_237
+        return 2251
 
-    monkeypatch.setattr(corpus_mod, "fetch_collection_count", fake_fetch)
+    monkeypatch.setattr(corpus_mod, "fetch_business_count", fake_business)
     out = await corpus_mod.resolve_search_corpus(force=True)
-    assert out["business_count"] == 161_237
-    assert out["corpus_source"] == "zeus_admin"
+    assert out["business_count"] == 2251
+    assert out["corpus_source"] == "couchbase"
+
+
+@pytest.mark.asyncio
+async def test_fetch_business_count_reads_the_raw_count(monkeypatch):
+    from local_guide.n1ql_hydrate import QueryService
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_query(cb, statement, **_k):
+        calls.append((cb.username, statement))
+        return [2251]
+
+    monkeypatch.setattr(corpus_mod, "n1ql_query", fake_query)
+    monkeypatch.setattr(
+        corpus_mod,
+        "query_service_from_env",
+        lambda: QueryService("http://query.example", "user", "secret"),
+    )
+    assert await corpus_mod.fetch_business_count("yelp-demo", "_default", "_default") == 2251
+    assert calls[0][0] == "user"
+    assert 'WHERE `type` = "Business"' in calls[0][1]
+    assert await corpus_mod.fetch_business_count("bad name", "_default", "_default") is None
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_business_count_rejects_a_non_integer_row(monkeypatch):
+    from local_guide.n1ql_hydrate import QueryService
+
+    async def fake_query(*_a, **_k):
+        return [{"n": 2251}]
+
+    monkeypatch.setattr(corpus_mod, "n1ql_query", fake_query)
+    monkeypatch.setattr(
+        corpus_mod,
+        "query_service_from_env",
+        lambda: QueryService("http://query.example", "user", "secret"),
+    )
+    assert await corpus_mod.fetch_business_count("yelp-demo", "_default", "_default") is None
+
+
+@pytest.mark.asyncio
+async def test_n1ql_query_rejects_a_non_json_body(monkeypatch, caplog):
+    from local_guide import n1ql_hydrate
+
+    class _Res:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("not json")
+
+    class _Client:
+        def __init__(self, *_a, **_k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_a):
+            return False
+
+        async def post(self, _url, data, auth):
+            assert auth[0] == "user"
+            assert "COUNT" in data["statement"]
+            return _Res()
+
+    monkeypatch.setattr(n1ql_hydrate.httpx, "AsyncClient", _Client)
+    caplog.set_level("WARNING")
+    rows = await n1ql_hydrate.n1ql_query(
+        n1ql_hydrate.QueryService("http://query.example", "user", "secret"),
+        "SELECT RAW COUNT(*)",
+    )
+    assert rows is None
+    assert "n1ql response was not JSON" in caplog.text
 
 
 def test_health_includes_business_count(monkeypatch, client):
