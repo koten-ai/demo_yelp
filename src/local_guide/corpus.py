@@ -1,20 +1,24 @@
 """Corpus size for search-loader copy (\"Searching N businesses…\").
 
-Prefer optional config override, else Zeus Hub collection_counts for the
-default sample scope. Cached briefly so /api/health stays cheap.
+Prefer an optional config override, else the number of ``type = "Business"``
+documents in the target keyspace. Cached briefly so /api/health stays cheap.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
-import httpx
-
+from local_guide.n1ql_hydrate import n1ql_query, query_service_from_env
 from local_guide.paths import PROJECT_ROOT
+
+logger = logging.getLogger("local_guide.corpus")
+
+_KEYSPACE_PART = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _CACHE_TTL_S = 300.0
 _cache: dict[str, Any] = {"ts": 0.0, "payload": None}
@@ -40,28 +44,6 @@ def read_app_config() -> dict[str, Any]:
     except Exception:
         pass
     return {}
-
-
-def admin_base_url(zeus_url: str | None = None) -> str:
-    """Hub/admin base (collection_counts). ZEUS_ADMIN_URL wins; else :9091 on Zeus host."""
-    explicit = (
-        os.environ.get("ZEUS_ADMIN_URL")
-        or os.environ.get("ZEUS_HUB_URL")
-        or ""
-    ).strip()
-    if explicit:
-        return explicit.rstrip("/")
-
-    raw = (zeus_url or os.environ.get("ZEUS_URL") or "").strip()
-    if not raw:
-        raw = str((read_app_config().get("zeus") or {}).get("url") or "").strip()
-    if not raw:
-        raw = "http://127.0.0.1:8080"
-
-    parsed = urlparse(raw)
-    scheme = parsed.scheme or "http"
-    host = parsed.hostname or "127.0.0.1"
-    return f"{scheme}://{host}:9091"
 
 
 def _default_sample(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -98,39 +80,29 @@ def _config_override(cfg: dict[str, Any]) -> tuple[int | None, str]:
         return None, label
 
 
-async def fetch_collection_count(
-    bucket: str,
-    scope: str,
-    collection: str,
-    *,
-    admin_url: str | None = None,
-) -> int | None:
-    """Live KV item count from Hub GET …/collection_counts."""
-    base = (admin_url or admin_base_url()).rstrip("/")
-    url = f"{base}/admin/api/scopes/{bucket}/{scope}/collection_counts"
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            res = await client.get(url)
-            if res.status_code != 200:
-                return None
-            data = res.json()
-            counts = data.get("counts") if isinstance(data, dict) else None
-            if not isinstance(counts, dict):
-                return None
-            if collection in counts:
-                return int(counts[collection])
-            # Sum operator collections; skip Zeus system collections.
-            total = 0
-            found = False
-            for key, value in counts.items():
-                name = str(key)
-                if name.startswith("zeus_"):
-                    continue
-                total += int(value)
-                found = True
-            return total if found else None
-    except Exception:
+async def fetch_business_count(bucket: str, scope: str, collection: str) -> int | None:
+    """Exact ``type = "Business"`` documents in the target keyspace."""
+    cb = query_service_from_env()
+    if cb is None:
         return None
+    parts = (bucket, scope, collection)
+    if not all(_KEYSPACE_PART.fullmatch(part) for part in parts):
+        return None
+    statement = (
+        f"SELECT RAW COUNT(*) FROM `{bucket}`.`{scope}`.`{collection}` "
+        'WHERE `type` = "Business"'
+    )
+    rows = await n1ql_query(cb, statement)
+    if (
+        not rows
+        or len(rows) != 1
+        or isinstance(rows[0], bool)
+        or not isinstance(rows[0], int)
+    ):
+        if rows is not None:
+            logger.warning("business count row was not an integer")
+        return None
+    return rows[0]
 
 
 async def resolve_search_corpus(*, force: bool = False) -> dict[str, Any]:
@@ -139,7 +111,7 @@ async def resolve_search_corpus(*, force: bool = False) -> dict[str, Any]:
     Returns:
       business_count: int | None
       corpus_label: str
-      corpus_source: \"config\" | \"zeus_admin\" | \"none\"
+      corpus_source: \"config\" | \"couchbase\" | \"none\"
     """
     now = time.monotonic()
     if (
@@ -165,17 +137,11 @@ async def resolve_search_corpus(*, force: bool = False) -> dict[str, Any]:
     bucket = str(sample.get("bucket") or "yelp-demo")
     scope = str(sample.get("scope") or "_default")
     collection = str(sample.get("collection") or "_default")
-    zeus_url = str((cfg.get("zeus") or {}).get("url") or "") or None
-    live = await fetch_collection_count(
-        bucket,
-        scope,
-        collection,
-        admin_url=admin_base_url(zeus_url),
-    )
+    live = await fetch_business_count(bucket, scope, collection)
     payload = {
         "business_count": live,
         "corpus_label": label,
-        "corpus_source": "zeus_admin" if live is not None else "none",
+        "corpus_source": "couchbase" if live is not None else "none",
     }
     _cache["ts"] = now
     _cache["payload"] = payload

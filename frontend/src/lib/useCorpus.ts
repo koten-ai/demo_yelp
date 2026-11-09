@@ -6,7 +6,7 @@ import {
   type CorpusStats,
 } from "../state/corpus";
 
-/** Subscribe to catalog stats filled from the sample catalog (AppShell). */
+/** Subscribe to corpus stats filled from `/api/health` (AppShell). */
 export function useCorpusStats(): CorpusStats {
   const [stats, setStats] = useState(getCorpusStats);
   useEffect(() => subscribeCorpus(() => setStats(getCorpusStats())), []);

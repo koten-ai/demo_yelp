@@ -12,7 +12,7 @@ Home, Explore, and Ask AI need the API process, a Zeus URL, and `LLM_API_KEY`.
 - Ask AI keeps a multi-turn chat. A follow-up that says “which”, “those”, “these”, “them”, “narrow”, or “only” searches inside the previous turn’s results. A query containing “open” keeps places marked open
 - Ask AI **AI summary** switch: on writes a short summary above the cards; off shows the matching places only
 - Business page with a photo carousel, three generated review blurbs, and a generated good / bad / best-for summary
-- Header count comes from the catalog (`100 businesses`)
+- Header count is the number of `Business` documents in the database
 
 Home and Explore search goes through `frontend/src/api/client.ts` to `POST /api/search`. Suggestions, reviews, and insights in that file still use the sample catalog. The SearchBar can debounce a local typeahead (`enableSuggest`), and no page turns that on.
 

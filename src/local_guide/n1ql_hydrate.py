@@ -32,6 +32,39 @@ def query_service_from_env() -> QueryService | None:
     )
 
 
+async def n1ql_query(
+    cb: QueryService,
+    statement: str,
+    *,
+    timeout_s: float = 15.0,
+) -> list[Any] | None:
+    """POST one statement. None means the service did not return a result list."""
+    url = f"{cb.query_url.rstrip('/')}/query/service"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as http:
+            res = await http.post(
+                url,
+                data={"statement": statement},
+                auth=(cb.username, cb.password),
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("n1ql unreachable %s: %s", url, type(exc).__name__)
+        return None
+    if res.status_code != 200:
+        logger.warning("n1ql status=%s", res.status_code)
+        return None
+    try:
+        body = res.json()
+    except Exception:
+        logger.warning("n1ql response was not JSON")
+        return None
+    rows = body.get("results") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        logger.warning("n1ql response has no result list")
+        return None
+    return rows
+
+
 async def n1ql_hydrate_keys(
     cb: QueryService,
     bucket: str,
@@ -56,26 +89,8 @@ async def n1ql_hydrate_keys(
         f"FROM `{bucket}`.`{scope}`.`{collection}` "
         f"USE KEYS [{keys_lit}]"
     )
-    url = f"{cb.query_url.rstrip('/')}/query/service"
-    try:
-        async with httpx.AsyncClient(timeout=timeout_s) as http:
-            res = await http.post(
-                url,
-                data={"statement": statement},
-                auth=(cb.username, cb.password),
-            )
-    except httpx.HTTPError as e:
-        logger.warning("n1ql unreachable %s: %s", url, e)
-        return []
-    if res.status_code != 200:
-        logger.warning("n1ql status=%s body=%s", res.status_code, (res.text or "")[:240])
-        return []
-    try:
-        body = res.json()
-    except Exception:
-        return []
-    rows = body.get("results") if isinstance(body, dict) else None
-    if not isinstance(rows, list):
+    rows = await n1ql_query(cb, statement, timeout_s=timeout_s)
+    if not rows:
         return []
     out: list[dict[str, Any]] = []
     for row in rows:

@@ -160,14 +160,14 @@ export function isAbortError(e: unknown): boolean {
   return (e as { name?: string }).name === "AbortError";
 }
 
+/** Header and search-loader count. The API counts Business documents in the database. */
 export async function fetchHealth(): Promise<HealthResponse> {
-  return {
-    ok: true,
-    app_version: "0.1.0",
-    business_count: BUSINESSES.length,
-    corpus_label: "businesses",
-    corpus_source: "sample",
-  };
+  const res = await fetch("/api/health");
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok || !body || typeof body !== "object") {
+    throw new Error(`health failed (${res.status})`);
+  }
+  return body as HealthResponse;
 }
 
 /** Soft-fail typeahead — empty results on a short query. */
