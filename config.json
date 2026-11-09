@@ -1,0 +1,36 @@
+{
+  "profile": "development",
+  "client_floor": "client-floor-6.1",
+  "chat_requests_dir": "data/chat_requests",
+  "zeus": {
+    "url": "http://localhost:8080",
+    "auth_mode": "ZEUS_AUTH_MODE",
+    "timeout_s": 30,
+    "username": "ZEUS_USERNAME",
+    "password_env": "ZEUS_PASSWORD"
+  },
+  "target": {
+    "bucket": "yelp-demo",
+    "scope": "_default",
+    "collection": "_default"
+  },
+  "llm": {
+    "provider": "xai",
+    "base_url": "LLM_BASE_URL",
+    "model": "LLM_MODEL",
+    "api_key_env": "LLM_API_KEY",
+    "timeout_s": 120
+  },
+  "settings": {
+    "mode": "ZEUS_MODE",
+    "durable_sessions": false,
+    "ai_process_result": false,
+    "max_rounds": 12,
+    "ignore_user_tool_path_hints": true
+  },
+  "session": {
+    "semantic_cache": {
+      "enabled": false
+    }
+  }
+}

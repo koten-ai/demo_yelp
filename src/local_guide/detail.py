@@ -1,12 +1,60 @@
 """Business detail + AI review insight helpers."""
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from typing import Any
 
 from local_guide.chat_store import CHATS
 from local_guide.search import run_search
+from local_guide.zeus_config import client_symbol, load_config, resolve_zeus_config
+
+logger = logging.getLogger("local_guide.detail")
+run_verb_from_config = client_symbol("run_verb_from_config")
+n1ql_hydrate_keys = client_symbol("n1ql_hydrate_keys", module="zeus_client.zeus.suggest")
+
+
+class CouchbaseQueryConfig:
+    """Query-service hydrate settings. Env wins over the JSON mapping."""
+
+    def __init__(self, query_url: str, username: str = "Administrator", password: str = ""):
+        self.query_url = query_url
+        self.username = username
+        self.password = password
+
+    @classmethod
+    def from_mapping(
+        cls,
+        raw,
+        *,
+        zeus_url: str = "",
+        allow_host_default: bool = True,
+    ):
+        import os
+        from urllib.parse import urlparse
+
+        mapping = dict(raw or {})
+        query_url = (
+            (os.environ.get("COUCHBASE_QUERY_URL") or "").strip()
+            or str(mapping.get("query_url") or "").strip()
+        )
+        if not query_url and allow_host_default and zeus_url:
+            parsed = urlparse(zeus_url.rstrip("/"))
+            host = parsed.hostname or "127.0.0.1"
+            query_url = f"http://{host}:8093"
+        if not query_url:
+            return None
+        username = (
+            (os.environ.get("COUCHBASE_USERNAME") or "").strip()
+            or str(mapping.get("username") or "Administrator").strip()
+        )
+        if os.environ.get("COUCHBASE_PASSWORD") is not None:
+            password = os.environ.get("COUCHBASE_PASSWORD")
+        else:
+            password = mapping.get("password", "")
+        return cls(query_url=query_url.rstrip("/"), username=username, password=str(password))
+
 
 _GOOD_BAD = re.compile(
     r"(?is)\*\*\s*(the\s+good|good|pros)\s*\*\*\s*:?\s*(.+?)(?=\*\*\s*(the\s+bad|bad|cons|best)|$)"
@@ -428,7 +476,9 @@ def _sample_triple(cfg: dict[str, Any]) -> tuple[str, str, str]:
     triple = (cfg.get("samples") or {}).get(sample_name) or {}
     if not triple and isinstance(cfg.get("samples"), dict) and cfg["samples"]:
         triple = next(iter(cfg["samples"].values()))
-    bucket = str(triple.get("bucket") or sample_name or "")
+    if not triple and isinstance(cfg.get("target"), dict):
+        triple = cfg["target"]
+    bucket = str(triple.get("bucket") or sample_name or "yelp-demo")
     scope = str(triple.get("scope") or "_default")
     collection = str(triple.get("collection") or "_default")
     return bucket, scope, collection
@@ -447,15 +497,6 @@ async def fetch_business_reviews(
     N1QL ``USE KEYS`` (same helper as fast-tier suggest). Falls back to
     ``project`` on find node ids when N1QL is unavailable.
     """
-    from zeus_client import (
-        CouchbaseQueryConfig,
-        load_config,
-        logger,
-        resolve_zeus_config,
-        run_verb_from_config,
-    )
-    from zeus_client.zeus.suggest import n1ql_hydrate_keys
-
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
     lim = max(1, min(int(limit or DEFAULT_REVIEW_LIMIT), MAX_REVIEW_LIMIT))
@@ -466,6 +507,15 @@ async def fetch_business_reviews(
             "count": 0,
             "source": "none",
             "error": "empty business_id",
+            "ai_process_result": False,
+        }
+    if run_verb_from_config is None:
+        return {
+            "business_id": bare,
+            "reviews": [],
+            "count": 0,
+            "source": "error",
+            "error": "zeus_client.run_verb_from_config is not available",
             "ai_process_result": False,
         }
 
@@ -520,7 +570,7 @@ async def fetch_business_reviews(
         allow_host_default=False,
     )
 
-    if doc_keys and cb is not None:
+    if doc_keys and cb is not None and n1ql_hydrate_keys is not None:
         try:
             rows = await n1ql_hydrate_keys(
                 cb,
@@ -555,7 +605,7 @@ async def fetch_business_reviews(
     user_keys = _user_lookup_keys(
         [_str_field(r.get("user_id")) for r in rows if isinstance(r, dict)]
     )
-    if user_keys and cb is not None:
+    if user_keys and cb is not None and n1ql_hydrate_keys is not None:
         try:
             user_rows = await n1ql_hydrate_keys(
                 cb,
@@ -704,15 +754,6 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     ``config.couchbase`` is set; else ``project`` on find node ids. Soft-fails
     with a minimal card when possible.
     """
-    from zeus_client import (
-        CouchbaseQueryConfig,
-        load_config,
-        logger,
-        resolve_zeus_config,
-        run_verb_from_config,
-    )
-    from zeus_client.zeus.suggest import n1ql_hydrate_keys
-
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
     if not bare:
@@ -721,6 +762,15 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
             "business_id": raw_id,
             "source": "none",
             "error": "empty business_id",
+            "ai_process_result": False,
+            "chat_id": None,
+        }
+    if run_verb_from_config is None:
+        return {
+            "business": None,
+            "business_id": bare,
+            "source": "error",
+            "error": "zeus_client.run_verb_from_config is not available",
             "ai_process_result": False,
             "chat_id": None,
         }
@@ -793,7 +843,7 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     keys_for_n1ql = [k for k in doc_keys if k.startswith("biz:")] or (
         [prefer_key] if prefer_key.startswith("biz:") else []
     )
-    if keys_for_n1ql and cb is not None:
+    if keys_for_n1ql and cb is not None and n1ql_hydrate_keys is not None:
         try:
             rows = await n1ql_hydrate_keys(
                 cb,

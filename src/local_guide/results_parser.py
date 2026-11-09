@@ -329,12 +329,12 @@ def _collect_arrays(obj: Any, found: list) -> None:
         return
     if not isinstance(obj, dict):
         return
+    # Pipeline envelopes nest the row list under dicts, e.g.
+    # result_json.data.rows.rows. Walk those dicts; a list is the row set.
     for key in ("rows", "items", "results", "data", "businesses", "matches", "nodes"):
         val = obj.get(key)
-        if isinstance(val, list):
-            for item in val:
-                if isinstance(item, dict):
-                    found.append(item)
+        if isinstance(val, (list, dict)):
+            _collect_arrays(val, found)
     for key in ("return", "output"):
         val = obj.get(key)
         if isinstance(val, dict):
