@@ -7,12 +7,11 @@ import uuid
 from typing import Any
 
 from local_guide.chat_store import CHATS
+from local_guide.n1ql_hydrate import n1ql_hydrate_keys, query_service_from_env
 from local_guide.search import run_search
-from local_guide.zeus_config import client_symbol, load_config, resolve_zeus_config
+from local_guide.zeus_config import get_runtime
 
 logger = logging.getLogger("local_guide.detail")
-run_verb_from_config = client_symbol("run_verb_from_config")
-n1ql_hydrate_keys = client_symbol("n1ql_hydrate_keys", module="zeus_client.zeus.suggest")
 
 
 class CouchbaseQueryConfig:
@@ -471,17 +470,24 @@ def _project_rows(body: Any) -> list[dict[str, Any]]:
     return [r for r in rows if isinstance(r, dict) and not r.get("missing")]
 
 
-def _sample_triple(cfg: dict[str, Any]) -> tuple[str, str, str]:
-    sample_name = str(cfg.get("default_sample") or "")
-    triple = (cfg.get("samples") or {}).get(sample_name) or {}
-    if not triple and isinstance(cfg.get("samples"), dict) and cfg["samples"]:
-        triple = next(iter(cfg["samples"].values()))
-    if not triple and isinstance(cfg.get("target"), dict):
-        triple = cfg["target"]
-    bucket = str(triple.get("bucket") or sample_name or "yelp-demo")
-    scope = str(triple.get("scope") or "_default")
-    collection = str(triple.get("collection") or "_default")
-    return bucket, scope, collection
+def _target_triple(rt) -> tuple[str, str, str]:
+    target = rt.config.target
+    return (
+        str(getattr(target, "bucket", "") or ""),
+        str(getattr(target, "scope", "") or "_default"),
+        str(getattr(target, "collection", "") or "_default"),
+    )
+
+
+def _mode(rt) -> str:
+    return str(getattr(rt.config.settings, "mode", "") or "analytics")
+
+
+async def _data_verb(rt, name: str, body: dict):
+    mode = _mode(rt)
+    if name == "find":
+        return await rt.data.find(body, mode_header=mode)
+    return await rt.data.verb(name, body, mode_header=mode)
 
 
 async def fetch_business_reviews(
@@ -491,11 +497,10 @@ async def fetch_business_reviews(
 ) -> dict[str, Any]:
     """Fetch reviews for a business via Zeus V2 ``find`` (no LLM).
 
-    Uses :func:`zeus_client.run_verb_from_config` → ``find`` with
-    ``entity_type=Review`` and ``where.business_id``. Review body text lives on
-    source docs, so when Couchbase query config is present we hydrate with
-    N1QL ``USE KEYS`` (same helper as fast-tier suggest). Falls back to
-    ``project`` on find node ids when N1QL is unavailable.
+    Uses ``rt.data.find`` with ``entity_type=Review`` and ``where.business_id``.
+    Review body text lives on source docs, so when ``COUCHBASE_QUERY_URL`` is
+    set we hydrate with N1QL ``USE KEYS``. Falls back to ``project`` on find
+    node ids when N1QL is unavailable.
     """
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
@@ -509,20 +514,11 @@ async def fetch_business_reviews(
             "error": "empty business_id",
             "ai_process_result": False,
         }
-    if run_verb_from_config is None:
-        return {
-            "business_id": bare,
-            "reviews": [],
-            "count": 0,
-            "source": "error",
-            "error": "zeus_client.run_verb_from_config is not available",
-            "ai_process_result": False,
-        }
 
     try:
-        cfg = await load_config()
+        rt = await get_runtime()
     except Exception as e:
-        logger.warning("fetch_business_reviews load_config failed: %s", e)
+        logger.warning("fetch_business_reviews runtime failed: %s", e)
         return {
             "business_id": bare,
             "reviews": [],
@@ -532,18 +528,17 @@ async def fetch_business_reviews(
             "ai_process_result": False,
         }
 
-    find_res = await run_verb_from_config(
+    find_res = await _data_verb(
+        rt,
         "find",
         {
             "entity_type": "Review",
             "where": {"business_id": bare},
             "limit": lim,
         },
-        cfg,
-        mode_header="analytics",
     )
     if not find_res.ok:
-        err = find_res.error or f"find status {find_res.status}"
+        err = find_res.error or f"find status {find_res.status_code}"
         logger.warning("fetch_business_reviews find failed: %s", err)
         return {
             "business_id": bare,
@@ -560,17 +555,10 @@ async def fetch_business_reviews(
     source = "zeus_find"
     sources: list[str] = ["zeus_find"]
 
-    zcfg = resolve_zeus_config(cfg)
-    zeus_url = str(zcfg.get("url") or "")
-    bucket, scope, collection = _sample_triple(cfg)
-    cb_raw = cfg.get("couchbase") if isinstance(cfg.get("couchbase"), dict) else None
-    cb = CouchbaseQueryConfig.from_mapping(
-        cb_raw,
-        zeus_url=zeus_url,
-        allow_host_default=False,
-    )
+    bucket, scope, collection = _target_triple(rt)
+    cb = query_service_from_env()
 
-    if doc_keys and cb is not None and n1ql_hydrate_keys is not None:
+    if doc_keys and cb is not None:
         try:
             rows = await n1ql_hydrate_keys(
                 cb,
@@ -587,11 +575,10 @@ async def fetch_business_reviews(
             logger.warning("fetch_business_reviews n1ql hydrate failed: %s", e)
 
     if not rows and node_ids:
-        proj = await run_verb_from_config(
+        proj = await _data_verb(
+            rt,
             "project",
             {"ids": node_ids[:lim], "fields": list(_REVIEW_PROJECT_FIELDS)},
-            cfg,
-            mode_header="analytics",
         )
         if proj.ok:
             rows = _project_rows(proj.body)
@@ -605,7 +592,7 @@ async def fetch_business_reviews(
     user_keys = _user_lookup_keys(
         [_str_field(r.get("user_id")) for r in rows if isinstance(r, dict)]
     )
-    if user_keys and cb is not None and n1ql_hydrate_keys is not None:
+    if user_keys and cb is not None:
         try:
             user_rows = await n1ql_hydrate_keys(
                 cb,
@@ -631,29 +618,27 @@ async def fetch_business_reviews(
                 bare_uid = normalize_yelp_user_id(uk)
                 if not bare_uid:
                     continue
-                ufind = await run_verb_from_config(
+                ufind = await _data_verb(
+                    rt,
                     "find",
                     {
                         "entity_type": "User",
                         "where": {"user_id": bare_uid},
                         "limit": 1,
                     },
-                    cfg,
-                    mode_header="analytics",
                 )
                 if not ufind.ok:
                     continue
                 u_nids, _ = _find_result_keys(ufind.body)
                 found_user_node_ids.extend(u_nids[:1])
             if found_user_node_ids:
-                uproj = await run_verb_from_config(
+                uproj = await _data_verb(
+                    rt,
                     "project",
                     {
                         "ids": found_user_node_ids[:lim],
                         "fields": list(_USER_PROJECT_FIELDS),
                     },
-                    cfg,
-                    mode_header="analytics",
                 )
                 if uproj.ok:
                     users_by_id = _index_users_by_id(_project_rows(uproj.body))
@@ -751,8 +736,8 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
 
     ``find`` entity_type=Business where business_id=<bare> (strip optional
     ``biz:``), then hydrate source fields with N1QL ``USE KEYS`` when
-    ``config.couchbase`` is set; else ``project`` on find node ids. Soft-fails
-    with a minimal card when possible.
+    ``COUCHBASE_QUERY_URL`` is set; else ``project`` on find node ids.
+    Soft-fails with a minimal card when possible.
     """
     raw_id = (business_id or "").strip()
     bare = normalize_yelp_business_id(raw_id)
@@ -765,20 +750,11 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
             "ai_process_result": False,
             "chat_id": None,
         }
-    if run_verb_from_config is None:
-        return {
-            "business": None,
-            "business_id": bare,
-            "source": "error",
-            "error": "zeus_client.run_verb_from_config is not available",
-            "ai_process_result": False,
-            "chat_id": None,
-        }
 
     try:
-        cfg = await load_config()
+        rt = await get_runtime()
     except Exception as e:
-        logger.warning("fetch_business_via_find load_config failed: %s", e)
+        logger.warning("fetch_business_via_find runtime failed: %s", e)
         return {
             "business": None,
             "business_id": bare,
@@ -788,18 +764,17 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
             "chat_id": None,
         }
 
-    find_res = await run_verb_from_config(
+    find_res = await _data_verb(
+        rt,
         "find",
         {
             "entity_type": "Business",
             "where": {"business_id": bare},
             "limit": 1,
         },
-        cfg,
-        mode_header="analytics",
     )
     if not find_res.ok:
-        err = find_res.error or f"find status {find_res.status}"
+        err = find_res.error or f"find status {find_res.status_code}"
         logger.warning("fetch_business_via_find find failed: %s", err)
         return {
             "business": None,
@@ -830,20 +805,13 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
     source = "zeus_find"
     sources: list[str] = ["zeus_find"]
 
-    zcfg = resolve_zeus_config(cfg)
-    zeus_url = str(zcfg.get("url") or "")
-    bucket, scope, collection = _sample_triple(cfg)
-    cb_raw = cfg.get("couchbase") if isinstance(cfg.get("couchbase"), dict) else None
-    cb = CouchbaseQueryConfig.from_mapping(
-        cb_raw,
-        zeus_url=zeus_url,
-        allow_host_default=False,
-    )
+    bucket, scope, collection = _target_triple(rt)
+    cb = query_service_from_env()
 
     keys_for_n1ql = [k for k in doc_keys if k.startswith("biz:")] or (
         [prefer_key] if prefer_key.startswith("biz:") else []
     )
-    if keys_for_n1ql and cb is not None and n1ql_hydrate_keys is not None:
+    if keys_for_n1ql and cb is not None:
         try:
             rows = await n1ql_hydrate_keys(
                 cb,
@@ -860,11 +828,10 @@ async def fetch_business_via_find(business_id: str) -> dict[str, Any]:
             logger.warning("fetch_business_via_find n1ql hydrate failed: %s", e)
 
     if not rows and node_ids:
-        proj = await run_verb_from_config(
+        proj = await _data_verb(
+            rt,
             "project",
             {"ids": node_ids[:1], "fields": list(_BUSINESS_PROJECT_FIELDS)},
-            cfg,
-            mode_header="analytics",
         )
         if proj.ok:
             rows = _project_rows(proj.body)

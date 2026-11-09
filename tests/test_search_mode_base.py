@@ -91,7 +91,6 @@ def _install_search_fakes(monkeypatch, search_mod, runtime):
 
     monkeypatch.setattr(search_mod, "get_runtime", fake_get_runtime)
     monkeypatch.setattr(search_mod, "persist_chat", AsyncMock())
-    monkeypatch.setattr(search_mod, "build_tool_order", lambda _chats: {"v1": [], "v2": []})
     monkeypatch.setattr(search_mod, "extract_businesses", lambda _t: [])
     monkeypatch.setattr(search_mod, "parse_markdown_answer", lambda _a: None)
 
@@ -138,7 +137,9 @@ async def test_search_calls_run_turn_without_frozen_catalog(monkeypatch):
     assert kwargs["settings"].ai_process_result is False
     assert kwargs["settings"].durable_sessions is False
     assert kwargs["settings"].max_rounds == 12
+    assert kwargs["rewind"] is False
     assert out["mode"] == "analytics"
+    assert out["rewind"] is False
     assert "base_id" not in out
     assert out["target"] == "yelp-demo/_default/_default"
     assert out["zeus_url"] == "http://from-env:8080"
@@ -159,7 +160,9 @@ async def test_search_defaults_mode_analytics_when_missing(monkeypatch):
     assert runtime.catalog.load_for_turn.await_args.args[0] == "analytics"
     assert "base_id" not in runtime.agent.run_turn.await_args.kwargs
     assert "chat_request" not in runtime.agent.run_turn.await_args.kwargs
+    assert runtime.agent.run_turn.await_args.kwargs["rewind"] is False
     assert out["mode"] == "analytics"
+    assert out["rewind"] is False
     assert "base_id" not in out
     assert out["target"] == "yelp-demo/_default/_default"
 

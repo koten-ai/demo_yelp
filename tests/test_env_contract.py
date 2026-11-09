@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -269,12 +270,20 @@ def test_suggest_returns_without_llm_key(monkeypatch, client) -> None:
                 "source": "zeus_fts",
             }
 
-    async def fake_run(*_args, **_kwargs):
-        seen["called"] = True
-        assert os.environ.get("LLM_API_KEY", "") == ""
-        return _Result()
+    class _Data:
+        async def search(self, _query, *, options=None):
+            seen["called"] = True
+            assert os.environ.get("LLM_API_KEY", "") == ""
+            assert options is not None
+            return _Result()
 
-    monkeypatch.setattr("local_guide.suggest.run_search_from_config", fake_run)
+    async def fake_runtime():
+        return SimpleNamespace(
+            config=SimpleNamespace(settings=SimpleNamespace(mode="analytics")),
+            data=_Data(),
+        )
+
+    monkeypatch.setattr("local_guide.zeus_config.get_runtime", fake_runtime)
     short = client.get("/api/suggest", params={"q": "s"})
     assert short.status_code == 200
     assert short.json()["results"] == []

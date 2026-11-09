@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from local_guide.async_lifecycle import lifespan
-from local_guide.chat_store import CHATS
+from local_guide.chat_trace import debug_query_enabled, tool_order
 from local_guide.corpus import resolve_search_corpus
 from local_guide.detail import (
     DEFAULT_REVIEW_LIMIT,
@@ -32,6 +32,8 @@ class SearchBody(BaseModel):
     chat_id: str | None = None
     # False = landing/results cheap path; True = Ask AI insight synthesis (0.2.1+).
     ai_process_result: bool = False
+    # 1/true/yes/on forwards rewind into the agent turn. Omitted stays off.
+    debug: str | bool | None = None
 
 
 class InsightBody(BaseModel):
@@ -131,6 +133,7 @@ def create_app() -> FastAPI:
             query,
             body.chat_id,
             ai_process_result=bool(body.ai_process_result),
+            rewind=debug_query_enabled(body.debug),
         )
         if result.get("error"):
             status = 502 if "network error" in result["error"] else 400
@@ -147,9 +150,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/tool-order")
     async def api_tool_order():
-        from local_guide.search import build_tool_order
-
-        return build_tool_order(CHATS)
+        return tool_order()
 
     @app.get("/api/business/{business_id}")
     async def api_business(

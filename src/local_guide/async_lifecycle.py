@@ -1,4 +1,4 @@
-"""FastAPI lifespan: HTTP client, catalog sync, chat reload."""
+"""FastAPI lifespan: chat reload, optional catalog sync, and runtime shutdown."""
 from __future__ import annotations
 
 import logging
@@ -7,7 +7,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from local_guide.paths import PROJECT_ROOT
-from local_guide.zeus_config import client_symbol, configure_zeus_client, load_config
+from local_guide.zeus_config import (
+    client_symbol,
+    close_runtime,
+    configure_zeus_client,
+    load_config,
+)
 
 logger = logging.getLogger("local_guide")
 
@@ -51,3 +56,4 @@ async def lifespan(app: FastAPI):
     yield
     if close_http is not None:
         await close_http()
+    await close_runtime()

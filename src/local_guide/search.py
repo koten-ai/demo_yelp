@@ -7,58 +7,16 @@ import uuid
 from dataclasses import replace
 
 import httpx
-from zeus_client import TurnStatus
+from zeus_client import TurnStatus, user_facing_answer
 from zeus_client.domain.errors import ZeusClientError
 
 from local_guide.answer_parser import parse_markdown_answer, structured_answer_to_results
 from local_guide.chat_store import CHATS, chat_lock, persist_chat
+from local_guide.chat_trace import inspector_envelope
 from local_guide.results_parser import extract_businesses
-from local_guide.zeus_config import client_symbol, env_text, get_runtime
+from local_guide.zeus_config import env_text, get_runtime
 
 logger = logging.getLogger("local_guide.search")
-
-_user_facing_answer = client_symbol("user_facing_answer")
-if _user_facing_answer is None:
-    def _user_facing_answer(answer, *, ui_text=None, layer_summary=None):  # type: ignore[misc]
-        return answer if isinstance(answer, str) else ("" if answer is None else str(answer))
-
-
-def _layer_dict(layer: object) -> dict | None:
-    if isinstance(layer, dict):
-        return layer
-    summary = getattr(layer, "summary", None)
-    if isinstance(summary, str):
-        return {"summary": summary}
-    return None
-
-
-# App catalog used when this zeus_client build does not export build_tool_order.
-_APP_TOOL_ORDER = {
-    "v1": [],
-    "v2": [
-        "describe",
-        "explain",
-        "get",
-        "find",
-        "set",
-        "order",
-        "enrich",
-        "project",
-        "traverse",
-        "pipeline",
-        "search",
-        "analyze",
-        "return",
-    ],
-}
-
-
-def build_tool_order(chats=None):
-    client_build = client_symbol("build_tool_order")
-    if client_build is None:
-        return _APP_TOOL_ORDER
-    return client_build(chats)
-
 
 LOCAL_PROMPT_PREFIX = (
     "Find local businesses that match these preferences in the yelp-demo knowledge graph. "
@@ -99,6 +57,15 @@ _POISON_MARKERS = (
     "No verifiable",
     "collection boundary errors",
 )
+
+
+def _layer_dict(layer: object) -> dict | None:
+    if isinstance(layer, dict):
+        return layer
+    summary = getattr(layer, "summary", None)
+    if isinstance(summary, str):
+        return {"summary": summary}
+    return None
 
 
 def _message_text(turn: dict) -> str:
@@ -143,7 +110,7 @@ def history_looks_poisoned(prior_turns: list | None) -> bool:
 
 
 def synthesize_answer_from_results(query: str, results: list[dict]) -> str:
-    """Fallback prose when the model returns empty content but zeus_data mapped."""
+    """Fallback prose when the model returns empty content but cards mapped."""
     if not results:
         return ""
     names = [str(r.get("name") or "").strip() for r in results if r.get("name")]
@@ -165,26 +132,302 @@ def _answer_is_empty(answer: object) -> bool:
     return text.lower() in _EMPTY_ANSWER_MARKERS
 
 
+def _new_turns(result) -> list:
+    turns = []
+    for msg in result.messages:
+        if hasattr(msg, "to_openai"):
+            turns.append(msg.to_openai())
+        elif isinstance(msg, dict):
+            turns.append(dict(msg))
+    return turns
+
+
+def _session_bits(result, trace: dict, prior_sid: str, prior_round: int) -> dict:
+    returned_sid = str(result.debug.session_id or prior_sid or "")
+    session_meta = {
+        "session_id": returned_sid,
+        "round": result.debug.rounds,
+        "contract_status": result.debug.contract_status,
+    }
+    session_error = str((trace or {}).get("session_error") or "")
+    notes = (trace or {}).get("notes") or []
+    rehydrate_failed = any(
+        isinstance(n, str) and "rehydrate" in n and "failed" in n for n in notes
+    )
+    turn_conflict = "turn 409" in session_error or (
+        session_error.startswith("turn ") and "409" in session_error
+    )
+    returned_sid = (session_meta.get("session_id") or "").strip()
+    session_created = bool((trace or {}).get("session", {}).get("created")) and bool(returned_sid)
+    return {
+        "session_meta": session_meta,
+        "returned_sid": returned_sid,
+        "rehydrate_failed": rehydrate_failed,
+        "turn_conflict": turn_conflict,
+        "session_created": session_created,
+        "prior_sid": prior_sid,
+        "prior_round": prior_round,
+    }
+
+
+def _finish_answer(query: str, answer: str, result, trace: dict) -> tuple[str, list, dict | None]:
+    """Peel the user-facing answer and read cards from hops. Mutates trace notes."""
+    layer = _layer_dict(result.layer_a) or {}
+    layer_summary = layer.get("summary") if isinstance(layer, dict) else None
+    cleaned = user_facing_answer(
+        answer if isinstance(answer, str) else str(answer or ""),
+        ui_text=None,
+        layer_summary=layer_summary if isinstance(layer_summary, str) else None,
+    )
+    if cleaned and cleaned != (answer or ""):
+        answer = cleaned
+        notes = list(trace.get("notes") or [])
+        notes.append("[WARN] peeled Layer A envelope from Ask AI answer")
+        trace["notes"] = notes
+
+    results = extract_businesses(trace)
+    structured_answer = parse_markdown_answer(answer)
+    if not results and structured_answer:
+        results = structured_answer_to_results(structured_answer)
+
+    if _answer_is_empty(answer) and results:
+        answer = synthesize_answer_from_results(query, results)
+        notes = list(trace.get("notes") or [])
+        notes.append("[WARN] empty model answer; synthesized summary from zeus_data/results")
+        trace["notes"] = notes
+    return answer, results, structured_answer
+
+
+def _compose_turn(
+    rt,
+    result,
+    *,
+    query: str,
+    chat_id: str,
+    rewind: bool,
+    ai_process_result: bool,
+    prior_sid: str,
+    prior_round: int,
+) -> tuple[dict, dict]:
+    """API body plus the fields a stored turn writes. Does not touch CHATS."""
+    cfg = rt.config
+    zeus_url = (cfg.zeus.url or "").rstrip("/")
+    provider_id = cfg.llm.provider or "xai"
+    model = cfg.llm.model
+    mode = cfg.settings.mode or "analytics"
+    envelope = inspector_envelope(
+        result,
+        rewind=rewind,
+        chat_id=chat_id,
+        target=cfg.target,
+        mode=mode,
+        model=model,
+        provider=provider_id,
+    )
+    trace = envelope["trace"]
+    raw_answer = result.answer or ""
+    bits = _session_bits(result, trace, prior_sid, prior_round)
+    answer, results, structured_answer = _finish_answer(query, raw_answer, result, trace)
+    session_meta = bits["session_meta"]
+    body = {
+        "chat_id": chat_id,
+        "query": query,
+        "answer": answer,
+        "structured_answer": structured_answer,
+        "structured_response": {
+            "answer": answer or "",
+            "zeus_data": list(results),
+            "warnings": [],
+        },
+        "results": results,
+        "trace": trace,
+        "tool_order": envelope["tool_order"],
+        "target": envelope["target"],
+        "api_version": "v2",
+        "mode": mode,
+        "model": model,
+        "provider": provider_id,
+        "zeus_connection": "default",
+        "zeus_url": zeus_url,
+        "session_id": session_meta.get("session_id") or prior_sid,
+        "session_round": session_meta.get("round") or prior_round,
+        "contract_status": session_meta.get("contract_status"),
+        "ai_process_result": bool(ai_process_result),
+        "rewind": envelope["rewind"],
+    }
+    store = {
+        **bits,
+        "new_turns": _new_turns(result),
+        "raw_answer": raw_answer,
+    }
+    answer_len = len(answer) if isinstance(answer, str) else len(str(answer or ""))
+    logger.info(
+        "search complete chat_id=%s results=%d zeus_data=%d structured=%s answer_len=%d",
+        chat_id,
+        len(results),
+        len(results),
+        bool(structured_answer),
+        answer_len,
+    )
+    return body, store
+
+
+def _remember_turn(chat_id: str, query: str, body: dict, store: dict) -> None:
+    """Write one normal turn. Rewind never calls this."""
+    chat = CHATS[chat_id]
+    chat["turns"] = store["new_turns"]
+    returned_sid = store["returned_sid"]
+    session_meta = store["session_meta"]
+    rehydrate_failed = store["rehydrate_failed"]
+    turn_conflict = store["turn_conflict"]
+    prior_sid = store["prior_sid"]
+    prior_round = store["prior_round"]
+    if returned_sid:
+        chat["zeus_session_id"] = returned_sid
+        chat["zeus_round"] = session_meta.get("round") or (
+            1 if store["session_created"] else prior_round
+        )
+        chat["contract_status"] = session_meta.get("contract_status")
+        if rehydrate_failed and store["session_created"]:
+            logger.info(
+                "recovered dead zeus session chat_id=%s prior_sid=%s new_sid=%s",
+                chat_id,
+                (prior_sid or "")[:16],
+                returned_sid[:16],
+            )
+    elif rehydrate_failed or turn_conflict:
+        chat.pop("zeus_session_id", None)
+        chat["zeus_round"] = 0
+        chat["contract_status"] = session_meta.get("contract_status") or "none"
+        logger.warning(
+            "dropped dead zeus session chat_id=%s prior_sid=%s rehydrate_failed=%s turn_conflict=%s",
+            chat_id,
+            (prior_sid or "")[:16],
+            rehydrate_failed,
+            turn_conflict,
+        )
+    entry = {
+        "question": query,
+        "answer": store["raw_answer"],
+        "target": body["target"],
+        "mode": body["mode"],
+        "api_version": body["api_version"],
+        "model": body["model"],
+        "provider": body["provider"],
+        "trace": body["trace"],
+        "created": time.time(),
+        "session_id": returned_sid or (None if (rehydrate_failed or turn_conflict) else prior_sid),
+        "session_round": (
+            session_meta.get("round")
+            if returned_sid
+            else (0 if (rehydrate_failed or turn_conflict) else prior_round)
+        ),
+        "contract_status": session_meta.get("contract_status"),
+    }
+    chat.setdefault("traces", []).append(entry)
+    chat["last_results"] = body["results"]
+
+
+async def _open_runtime():
+    if not env_text("LLM_API_KEY"):
+        raise ValueError("LLM_API_KEY is not set (set it in .env, not config.json)")
+    rt = await get_runtime()
+    if not (rt.config.zeus.url or "").rstrip("/"):
+        raise ValueError("no Zeus URL configured (set ZEUS_URL)")
+    return rt
+
+
+async def _run_turn(rt, *, message: str, chat_id: str, ai_process_result: bool, rewind: bool, prior_messages: tuple):
+    cfg = rt.config
+    settings = cfg.settings
+    if bool(ai_process_result) != bool(settings.ai_process_result):
+        settings = replace(settings, ai_process_result=bool(ai_process_result))
+    try:
+        await rt.catalog.load_for_turn(settings.mode, target=cfg.target)
+        result = await rt.agent.run_turn(
+            message,
+            target=cfg.target,
+            settings=settings,
+            chat_id=chat_id,
+            model=cfg.llm.model,
+            enable_sessions=bool(settings.durable_sessions),
+            prior_messages=prior_messages,
+            rewind=bool(rewind),
+        )
+    except ZeusClientError as exc:
+        raise RuntimeError(exc.public_message or str(exc)) from exc
+    if result.status in {TurnStatus.ERROR, TurnStatus.REFUSED}:
+        err = getattr(result.error, "message", None) or "agent turn failed"
+        raise RuntimeError(str(err))
+    return result
+
+
 async def run_search(
     query: str,
     chat_id: str | None = None,
     *,
     ai_process_result: bool = False,
+    rewind: bool = False,
 ) -> dict:
     """Run one agent turn. Returns success payload or {\"error\": ...}.
 
     ``ai_process_result`` maps to kotenai-zeus-client ``ClientSettings`` (0.2.1+):
     - ``False`` (default): cheap path for landing / results search cards
     - ``True``: Hub-style insight synthesis for Ask AI multi-turn chat
+
+    A rewind turn never reads or writes the chat store.
     """
     try:
-        return await _search_async(query, chat_id, ai_process_result=ai_process_result)
+        if rewind:
+            return await _rewind_search(
+                query,
+                chat_id,
+                ai_process_result=ai_process_result,
+            )
+        return await _search_async(
+            query,
+            chat_id,
+            ai_process_result=ai_process_result,
+        )
     except RuntimeError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "rewind": bool(rewind)}
+    except ZeusClientError as e:
+        return {"error": (e.public_message or str(e)), "rewind": bool(rewind)}
     except httpx.HTTPError as e:
-        return {"error": f"network error: {e}"}
+        return {"error": f"network error: {e}", "rewind": bool(rewind)}
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": str(e), "rewind": bool(rewind)}
+
+
+async def _rewind_search(
+    query: str,
+    chat_id: str | None,
+    *,
+    ai_process_result: bool = False,
+) -> dict:
+    """One rewind turn. Does not lock or write CHATS."""
+    rt = await _open_runtime()
+    message = query.strip()
+    chat_id = chat_id or ("yelp_" + uuid.uuid4().hex[:12])
+    result = await _run_turn(
+        rt,
+        message=message,
+        chat_id=chat_id,
+        ai_process_result=ai_process_result,
+        rewind=True,
+        prior_messages=(),
+    )
+    body, _store = _compose_turn(
+        rt,
+        result,
+        query=query,
+        chat_id=chat_id,
+        rewind=True,
+        ai_process_result=ai_process_result,
+        prior_sid="",
+        prior_round=0,
+    )
+    return body
 
 
 async def _search_async(
@@ -193,24 +436,8 @@ async def _search_async(
     *,
     ai_process_result: bool = False,
 ) -> dict:
-    """One agent turn. Target, mode, and model come from the runtime."""
-    if not env_text("LLM_API_KEY"):
-        raise ValueError("LLM_API_KEY is not set (set it in .env, not config.json)")
-
-    rt = await get_runtime()
-    zeus_url = str(rt.config.zeus.url or "").rstrip("/")
-    if not zeus_url:
-        raise ValueError("no Zeus URL configured (set ZEUS_URL)")
-
-    settings = rt.config.settings
-    if bool(ai_process_result) != bool(settings.ai_process_result):
-        settings = replace(settings, ai_process_result=bool(ai_process_result))
-    mode = str(settings.mode or "analytics")
-    model = str(rt.config.llm.model or "")
-    provider_id = str(getattr(rt.config.llm, "provider", "") or "xai")
-    target_obj = rt.config.target
-    target = f"{target_obj.bucket}/{target_obj.scope}/{target_obj.collection}"
-
+    """One stored turn. Always writes the chat it runs."""
+    rt = await _open_runtime()
     message = query.strip()
     chat_id = chat_id or ("yelp_" + uuid.uuid4().hex[:12])
 
@@ -225,117 +452,42 @@ async def _search_async(
                 "last_results": [],
             }
         prior_turns = list(CHATS[chat_id]["turns"] or [])
+        prior_sid = CHATS[chat_id].get("zeus_session_id", "") or ""
+        prior_round = int(CHATS[chat_id].get("zeus_round", 0) or 0)
+
         if history_looks_poisoned(prior_turns):
             logger.warning(
-                "resetting poisoned chat history chat_id=%s turns=%d",
+                "resetting poisoned chat history chat_id=%s turns=%d prior_sid=%s",
                 chat_id,
                 len(prior_turns),
+                (prior_sid or "")[:16],
             )
             prior_turns = []
+            prior_sid = ""
+            prior_round = 0
             CHATS[chat_id]["turns"] = []
+            CHATS[chat_id].pop("zeus_session_id", None)
+            CHATS[chat_id]["zeus_round"] = 0
 
         prior_messages = tuple(turn for turn in prior_turns if isinstance(turn, dict))
-        try:
-            # chat_request and base_id stay omitted so the live catalog is loaded.
-            await rt.catalog.load_for_turn(settings.mode, target=rt.config.target)
-            result = await rt.agent.run_turn(
-                message,
-                target=rt.config.target,
-                settings=settings,
-                chat_id=chat_id,
-                model=model,
-                enable_sessions=bool(settings.durable_sessions),
-                prior_messages=prior_messages,
-            )
-        except ZeusClientError as exc:
-            raise RuntimeError(exc.public_message or str(exc)) from exc
-        if result.status in {TurnStatus.ERROR, TurnStatus.REFUSED}:
-            err = getattr(result.error, "message", None) or "agent turn failed"
-            raise RuntimeError(str(err))
-
-        trace = result.debug.to_dict()
-        trace["tool_calls"] = [dict(hop) for hop in result.debug.hops]
-        new_turns = []
-        for msg in result.messages:
-            if hasattr(msg, "to_openai"):
-                new_turns.append(msg.to_openai())
-            elif isinstance(msg, dict):
-                new_turns.append(dict(msg))
-
-        answer = result.answer or ""
-        layer = _layer_dict(getattr(result, "layer_a", None))
-        layer_summary = layer.get("summary") if isinstance(layer, dict) else None
-        cleaned = _user_facing_answer(
-            answer if isinstance(answer, str) else str(answer or ""),
-            ui_text=None,
-            layer_summary=layer_summary if isinstance(layer_summary, str) else None,
+        result = await _run_turn(
+            rt,
+            message=message,
+            chat_id=chat_id,
+            ai_process_result=ai_process_result,
+            rewind=False,
+            prior_messages=prior_messages,
         )
-        if cleaned and cleaned != (answer or ""):
-            answer = cleaned
-            notes = list(trace.get("notes") or [])
-            notes.append("[WARN] peeled Layer A envelope from Ask AI answer")
-            trace["notes"] = notes
-
-        results = extract_businesses(trace)
-        structured_answer = parse_markdown_answer(answer)
-        if not results and structured_answer:
-            results = structured_answer_to_results(structured_answer)
-
-        if _answer_is_empty(answer) and results:
-            answer = synthesize_answer_from_results(query, results)
-            notes = list(trace.get("notes") or [])
-            notes.append("[WARN] empty model answer; synthesized summary from results")
-            trace["notes"] = notes
-
-        session_id = str(getattr(result.debug, "session_id", "") or "")
-        session_round = result.debug.rounds
-        contract_status = result.debug.contract_status
-        CHATS[chat_id]["turns"] = new_turns
-        CHATS[chat_id]["last_results"] = results
-        CHATS[chat_id].setdefault("traces", []).append(
-            {
-                "question": query,
-                "answer": answer,
-                "target": target,
-                "mode": mode,
-                "api_version": "v2",
-                "model": model,
-                "provider": provider_id,
-                "trace": trace,
-                "created": time.time(),
-                "session_id": session_id or None,
-                "session_round": session_round,
-                "contract_status": contract_status,
-            }
+        body, store = _compose_turn(
+            rt,
+            result,
+            query=query,
+            chat_id=chat_id,
+            rewind=False,
+            ai_process_result=ai_process_result,
+            prior_sid=prior_sid,
+            prior_round=prior_round,
         )
+        _remember_turn(chat_id, query, body, store)
         await persist_chat(chat_id)
-
-    logger.info(
-        "search complete chat_id=%s results=%d structured=%s answer_len=%d",
-        chat_id,
-        len(results),
-        bool(structured_answer),
-        len(answer) if isinstance(answer, str) else len(str(answer or "")),
-    )
-
-    return {
-        "chat_id": chat_id,
-        "query": query,
-        "answer": answer,
-        "structured_answer": structured_answer,
-        "structured_response": {"answer": answer, "zeus_data": [], "warnings": []},
-        "results": results,
-        "trace": trace,
-        "tool_order": build_tool_order(CHATS),
-        "target": target,
-        "api_version": "v2",
-        "mode": mode,
-        "model": model,
-        "provider": provider_id,
-        "zeus_connection": "default",
-        "zeus_url": zeus_url,
-        "session_id": session_id,
-        "session_round": session_round,
-        "contract_status": contract_status,
-        "ai_process_result": bool(ai_process_result),
-    }
+        return body

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation, useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
+import { DebugLink } from "../lib/debugQuery";
 import { ErrorBanner, LoadingBlock } from "../components/common/States";
 import PhotoCarouselModal from "../components/gallery/PhotoCarouselModal";
 import ResultsMap from "../components/map/ResultsMap";
@@ -167,13 +168,13 @@ export default function BusinessDetailsPage() {
       {/* Contextual header — Stitch business details (nav suppressed) */}
       <header className="sticky top-16 z-20 bg-surface/70 backdrop-blur-xl border-b border-white/20 shadow-sm">
         <div className="mx-auto flex max-w-[1280px] items-center justify-between px-4 py-4 md:px-10">
-          <Link
+          <DebugLink
             to="/search"
             className="flex items-center gap-2 text-on-surface-variant transition-colors hover:text-primary"
           >
             <span className="material-symbols-outlined">arrow_back</span>
             <span className="font-mono text-xs uppercase tracking-wider">Back to search</span>
-          </Link>
+          </DebugLink>
           <div className="flex items-center gap-2 sm:gap-4">
             {shareHint && (
               <span className="text-xs font-mono text-secondary" role="status">

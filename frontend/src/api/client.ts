@@ -27,6 +27,8 @@ const AUTHORS: Array<[string, string]> = [
   ["Casey Nguyen", "89"],
 ];
 
+const lastResultsByChat = new Map<string, BusinessCard[]>();
+
 function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) >>> 0;
@@ -75,6 +77,22 @@ function rank(query: string, pool: BusinessCard[], limit: number): BusinessCard[
     })
     .slice(0, limit)
     .map((row) => row.b);
+}
+
+function summarize(query: string, results: BusinessCard[]): string {
+  if (!results.length) {
+    return `No places matched “${query}”. Try a category, a city, or a business name.`;
+  }
+  const lines = results.slice(0, 5).map((b) => {
+    const cat = (b.categories || "").split(",")[0]?.trim() || "Local spot";
+    const where = [b.city, b.state].filter(Boolean).join(", ");
+    const rating = b.rating ? `${b.rating}★` : "unrated";
+    const reviews = b.review_count ? `, ${Number(b.review_count).toLocaleString()} reviews` : "";
+    const place = where ? ` in ${where}` : "";
+    return `- **${b.name}** — ${cat}${place} (${rating}${reviews})`;
+  });
+  const noun = results.length === 1 ? "place" : "places";
+  return [`**${results.length} ${noun}** match “${query}”.`, "", ...lines].join("\n");
 }
 
 function reviewsFor(card: BusinessCard): ReviewItem[] {
@@ -192,7 +210,15 @@ export type SearchOptions = {
   signal?: AbortSignal;
 };
 
-function searchErrorMessage(body: unknown, status: number): string {
+export type AgentSearchOptions = {
+  /** Ask AI insight synthesis. The summary toggle on /chat. */
+  aiProcessResult?: boolean;
+  /** Truthy page debug value. Omitted or empty leaves rewind off. */
+  debug?: string | null;
+  signal?: AbortSignal;
+};
+
+function agentErrorMessage(body: unknown, status: number): string {
   if (body && typeof body === "object") {
     const rec = body as Record<string, unknown>;
     if (typeof rec.error === "string" && rec.error.trim()) return rec.error;
@@ -206,30 +232,58 @@ function searchErrorMessage(body: unknown, status: number): string {
   return `search failed (${status})`;
 }
 
-/** Ask the Zeus agent pipeline. `summarize` stays a UI toggle; it is not the insight hop. */
+/** Zeus agent turn. Home and Explore keep the local `search` helper. */
+export async function agentSearch(
+  query: string,
+  chatId?: string | null,
+  options?: AgentSearchOptions
+): Promise<SearchResponse> {
+  const q = query.trim();
+  const payload: Record<string, unknown> = {
+    query: q,
+    chat_id: chatId || undefined,
+    ai_process_result: options?.aiProcessResult ?? true,
+  };
+  if (options?.debug) payload.debug = options.debug;
+  const res = await fetch("/api/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  });
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(agentErrorMessage(body, res.status));
+  if (body && typeof body === "object") {
+    const err = (body as { error?: unknown }).error;
+    if (typeof err === "string" && err.trim()) throw new Error(err);
+  }
+  return body as SearchResponse;
+}
+
 export async function search(
   query: string,
   chatId?: string | null,
   options?: SearchOptions
 ): Promise<SearchResponse> {
   const q = query.trim();
-  const res = await fetch("/api/search", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query: q,
-      chat_id: chatId || undefined,
-      ai_process_result: false,
-    }),
-    signal: options?.signal,
-  });
-  const body: unknown = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(searchErrorMessage(body, res.status));
-  if (body && typeof body === "object") {
-    const err = (body as { error?: unknown }).error;
-    if (typeof err === "string" && err.trim()) throw new Error(err);
-  }
-  return body as SearchResponse;
+  await delay(420, options?.signal);
+  const refine =
+    Boolean(chatId) &&
+    lastResultsByChat.has(chatId || "") &&
+    /\b(which|those|them|these|narrow|only)\b/i.test(q);
+  const pool = refine ? lastResultsByChat.get(chatId || "") || BUSINESSES : BUSINESSES;
+  let results = rank(q, pool, 12);
+  if (refine && results.length === 0) results = rank(q, BUSINESSES, 12);
+  const id = chatId || `local-${Date.now().toString(36)}`;
+  lastResultsByChat.set(id, results);
+  const summarizeOn = options?.summarize ?? true;
+  return {
+    chat_id: id,
+    query: q,
+    answer: summarizeOn ? summarize(q, results) : "",
+    structured_answer: null,
+    results,
+  };
 }
 
 export async function fetchBusiness(businessId: string) {

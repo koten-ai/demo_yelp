@@ -1,6 +1,7 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { Outlet } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { fetchHealth } from "../../api/client";
+import { DebugNavLink } from "../../lib/debugQuery";
 import { setCorpusFromHealth } from "../../state/corpus";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -34,7 +35,7 @@ export default function AppShell() {
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-30 bg-surface-container-lowest/90 backdrop-blur border-b border-outline-variant/30">
         <div className="mx-auto max-w-[1280px] px-4 md:px-10 h-16 flex items-center justify-between">
-          <NavLink to="/" className="flex items-center gap-2">
+          <DebugNavLink to="/" className="flex items-center gap-2">
             <span className="w-9 h-9 rounded-xl ai-gradient flex items-center justify-center text-white">
               <span className="material-symbols-outlined text-[20px]">auto_awesome</span>
             </span>
@@ -44,17 +45,17 @@ export default function AppShell() {
                 Discover Local
               </div>
             </div>
-          </NavLink>
+          </DebugNavLink>
           <nav className="hidden md:flex items-center gap-6">
-            <NavLink to="/" className={linkClass} end>
+            <DebugNavLink to="/" className={linkClass} end>
               Home
-            </NavLink>
-            <NavLink to="/search" className={linkClass}>
+            </DebugNavLink>
+            <DebugNavLink to="/search" className={linkClass}>
               Explore
-            </NavLink>
-            <NavLink to="/chat" className={linkClass}>
+            </DebugNavLink>
+            <DebugNavLink to="/chat" className={linkClass}>
               Ask AI
-            </NavLink>
+            </DebugNavLink>
           </nav>
           <div className="text-xs text-on-surface-variant font-mono hidden sm:block text-right">
             {chromeLabel}
@@ -67,18 +68,18 @@ export default function AppShell() {
       </main>
 
       <nav className="md:hidden sticky bottom-0 z-30 bg-surface-container-lowest border-t border-outline-variant/30 px-6 py-2 flex justify-around">
-        <NavLink to="/" className={linkClass} end>
+        <DebugNavLink to="/" className={linkClass} end>
           <span className="material-symbols-outlined">home</span>
           Home
-        </NavLink>
-        <NavLink to="/search" className={linkClass}>
+        </DebugNavLink>
+        <DebugNavLink to="/search" className={linkClass}>
           <span className="material-symbols-outlined">explore</span>
           Explore
-        </NavLink>
-        <NavLink to="/chat" className={linkClass}>
+        </DebugNavLink>
+        <DebugNavLink to="/chat" className={linkClass}>
           <span className="material-symbols-outlined">auto_awesome</span>
           Ask AI
-        </NavLink>
+        </DebugNavLink>
       </nav>
     </div>
   );

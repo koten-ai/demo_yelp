@@ -391,7 +391,7 @@ def zeus_data_to_results(zeus_data: list[dict] | None) -> list[dict[str, str]]:
 
 
 def extract_businesses(trace: dict | None) -> list[dict[str, str]]:
-    """Walk trace tool_calls and return normalized business cards."""
+    """Walk trace tool_calls, or hops when that list is absent."""
     from local_guide.business_images import apply_local_images
 
     if not trace:
@@ -399,8 +399,12 @@ def extract_businesses(trace: dict | None) -> list[dict[str, str]]:
 
     seen: set[str] = set()
     results: list[dict[str, str]] = []
+    # Legacy traces store tool_calls. A V2 turn stores the same result_json on hops.
+    records = trace.get("tool_calls") or trace.get("hops") or []
 
-    for rec in trace.get("tool_calls") or []:
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
         for row in _rows_from_tool_call(rec):
             card = _normalize_row(row)
             if not card:

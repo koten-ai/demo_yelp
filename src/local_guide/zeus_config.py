@@ -255,6 +255,16 @@ async def get_runtime():
     return _runtime
 
 
+async def close_runtime() -> None:
+    """Drop the process-wide runtime and close its ports."""
+    global _runtime, _runtime_token
+    rt = _runtime
+    _runtime = None
+    _runtime_token = None
+    if rt is not None:
+        await rt.aclose()
+
+
 async def load_config() -> dict:
     """Resolve config.json once per process for the current env and file."""
     global _cached, _cached_token

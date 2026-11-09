@@ -42,8 +42,9 @@ def test_tool_order_returns_versions(client):
 async def test_search_mocked(monkeypatch, client):
     captured = {}
 
-    async def fake_search(query, chat_id=None, *, ai_process_result=False):
+    async def fake_search(query, chat_id=None, *, ai_process_result=False, rewind=False):
         captured["ai_process_result"] = ai_process_result
+        captured["rewind"] = rewind
         return {
             "chat_id": chat_id or "yelp_test123",
             "query": query,
@@ -93,8 +94,9 @@ async def test_search_mocked(monkeypatch, client):
 async def test_search_ask_ai_enables_insight(monkeypatch, client):
     captured = {}
 
-    async def fake_search(query, chat_id=None, *, ai_process_result=False):
+    async def fake_search(query, chat_id=None, *, ai_process_result=False, rewind=False):
         captured["ai_process_result"] = ai_process_result
+        captured["rewind"] = rewind
         return {
             "chat_id": chat_id or "yelp_askai",
             "query": query,

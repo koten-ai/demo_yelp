@@ -23,6 +23,16 @@
   </head>
   <body class="bg-background text-on-background antialiased">
     <div id="root"></div>
+    <script>
+      window.ZeusTraceConfig = {
+        toolOrder: {
+          v1: ["text_search", "get_by_keys", "find_nodes", "return_result"],
+          v2: ["describe", "explain", "get", "find", "set", "order", "enrich", "project", "traverse", "pipeline", "search", "analyze", "return"]
+        },
+        hubBaseUrl: "http://zeus-dev.local:9091"
+      };
+    </script>
+    <script async src="https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus_client_chat_trace/latest/zeus_client_chat_trace.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

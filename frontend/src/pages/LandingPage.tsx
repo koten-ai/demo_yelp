@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useDebugNavigate } from "../lib/debugQuery";
 import SearchBar from "../components/search/SearchBar";
 import TypingSuggestionChip from "../components/search/TypingSuggestionChip";
 import BusinessCard from "../components/results/BusinessCard";
@@ -11,7 +11,7 @@ import { clearSession, loadLastSearch, saveLastSearch } from "../state/session";
 import type { BusinessCard as Card, UiBusiness } from "../api/types";
 
 export default function LandingPage() {
-  const nav = useNavigate();
+  const nav = useDebugNavigate();
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");

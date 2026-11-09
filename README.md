@@ -1,8 +1,8 @@
 # LocalAI (Yelp Demo)
 
-Vite + React SPA for local business discovery. Home, Explore, Ask AI, and business details all read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`.
+Vite + React SPA for local business discovery. Home, Explore, and business details read the bundled sample catalog in `frontend/src/data/catalog.json` (100 businesses; the first is Trend Eye Care). Photos are static files under `frontend/public/business-images`. Ask AI posts to the FastAPI agent at `POST /api/search`.
 
-Running the UI needs Node.js only. It does not use a Zeus engine, an LLM key, or the FastAPI service in `src/local_guide`.
+Home and Explore need Node.js only. Ask AI also needs the API process, a Zeus URL, and `LLM_API_KEY`.
 
 ## Features
 
@@ -83,14 +83,14 @@ cd demo_yelp
 docker build -f Dockerfile.frontend -t local-guide-frontend .
 ```
 
-nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. The current SPA never requests those paths.
+nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. Ask AI posts `/api/search` through that proxy. Home, Explore, and business detail do not.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `BACKEND_UPSTREAM` | `http://backend:5000` | nginx `proxy_pass` target (no trailing slash) |
 | `NGINX_ENVSUBST_FILTER` | `BACKEND_` | Limit envsubst to backend knobs |
 
-`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. That API container is unused by this UI. Compose bind-mounts `./.env` read-only (no `env_file`, so a `$` in `ZEUS_PASSWORD` stays literal) and still expects a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** with `VITE_API_PROXY` set; the dev server ignores that variable and still serves the local catalog.
+`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. Ask AI on that UI calls the API. Home, Explore, and business detail stay on the bundled catalog. Compose bind-mounts `./.env` read-only (no `env_file`, so a `$` in `ZEUS_PASSWORD` stays literal) and still expects a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** with `VITE_API_PROXY` set; the dev server ignores that variable and still serves the local catalog.
 
 ```bash
 # UI image only — see docker build above.
@@ -101,7 +101,7 @@ DOCKER_BUILDKIT=1 docker compose up --build
 ```
 
 - nginx UI: http://localhost:3000
-- API (unused by the SPA): http://localhost:5000
+- API (Ask AI): http://localhost:5000
 - Vite profile `dev`: http://localhost:5173
 
 ## Project layout
@@ -112,7 +112,7 @@ demo_yelp/
 │   ├── src/data/catalog.json
 │   ├── src/api/client.ts     # in-browser search, reviews, insight
 │   └── public/business-images/
-├── src/local_guide/          # FastAPI + Zeus client (not called by the SPA)
+├── src/local_guide/          # FastAPI + Zeus client (Ask AI)
 ├── scripts/                  # image upload / finalize helpers
 ├── docker/                   # nginx template for Dockerfile.frontend
 ├── Dockerfile.frontend
@@ -123,7 +123,7 @@ demo_yelp/
 └── docker-compose.yml
 ```
 
-## Python API (not called by the SPA)
+## Python API
 
 `src/local_guide` is still a FastAPI app over the Couchbase `yelp-demo` bucket via [`kotenai-zeus-client`](../zeus_client_python) (`run_agent`, `run_search`, `run_verb` / `run_find`). `pyproject.toml` depends on the sibling checkout `file:../zeus_client_python`. The Docker release target still installs git tag `0.3.0-alpha` until a `0.3.1` tag exists. `pytest` covers this package, not the SPA.
 
@@ -137,7 +137,9 @@ demo_yelp/
 | GET | `/api/business/{id}/reviews` | Reviews via V2 `find` |
 | POST | `/api/business/{id}/insight` | AI review summary |
 
-There is no chat-trace panel in the SPA. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The vendored `zeus_client_chat_trace.js` bundle is not in `src/local_guide/static/`.
+Ask AI is the only screen that calls the agent. Open the SPA with `?debug=true` (`1`, `yes`, and `on` count too). That loads `zeus_client_chat_trace/latest` from the CDN. The lightning toggle is bottom-left. Hub for that panel is `http://zeus-dev.local:9091`, not public Zeus `:8080`. A truthy debug flag on `POST /api/search` sets rewind for that turn only and the chat page mounts one Turn traces card. Home, Explore, suggest, and business detail stay on the local catalog and do not mount a trace card.
+
+The script URL is `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus_client_chat_trace/latest/zeus_client_chat_trace.js`. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The bundle is not vendored into `src/local_guide/static/`.
 
 `config.json` is committed and secret-free. Copy `.env.example` to `.env`, then set `LLM_API_KEY` and `ZEUS_PASSWORD`. Do not put the API key or the Zeus password in `config.json`. The file stores env **names** (`zeus.password_env` = `ZEUS_PASSWORD`, `llm.api_key_env` = `LLM_API_KEY`) and sentinels (`zeus.auth_mode` = `ZEUS_AUTH_MODE`, `zeus.username` = `ZEUS_USERNAME`, `settings.mode` = `ZEUS_MODE`, `llm.base_url` = `LLM_BASE_URL`, `llm.model` = `LLM_MODEL`). The data target is `yelp-demo` / `_default` / `_default`.
 

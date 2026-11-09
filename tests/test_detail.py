@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from zeus_client.application.data_verb import VerbResult
 
 from local_guide.detail import (
     _isolated_detail_chat_id,
@@ -315,22 +316,25 @@ async def test_api_insight_ignores_body_chat_id(monkeypatch, client):
 async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
     calls: list[tuple] = []
 
-    class FakeVerb:
-        def __init__(self, ok=True, body=None, status=200, req_id="r1", error=""):
-            self.ok = ok
-            self.body = body
-            self.status = status
-            self.req_id = req_id
-            self.error = error
+    def verb_ok(name: str, body: dict) -> VerbResult:
+        return VerbResult(
+            verb=name,
+            ok=True,
+            status_code=200,
+            req_id="r1",
+            body=body,
+            error=None,
+        )
 
-    async def fake_run_verb_from_config(verb, args, cfg, **kwargs):
-        calls.append((verb, args))
-        if verb == "find":
-            assert args["entity_type"] == "Business"
-            assert args["where"]["business_id"] == "-4dYswJy7SPcbcERvitmIg"
-            assert args["limit"] == 1
-            return FakeVerb(
-                body={
+    class Data:
+        async def find(self, body, **kwargs):
+            calls.append(("find", body))
+            assert body["entity_type"] == "Business"
+            assert body["where"]["business_id"] == "-4dYswJy7SPcbcERvitmIg"
+            assert body["limit"] == 1
+            return verb_ok(
+                "find",
+                {
                     "result": {
                         "node_ids": ["file::a0b82eb7dd1d0e83"],
                         "items": [
@@ -342,29 +346,14 @@ async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
                             }
                         ],
                     }
-                }
+                },
             )
-        if verb == "project":
-            return FakeVerb(body={"result": {"rows": []}})
-        raise AssertionError(f"unexpected verb {verb}")
 
-    async def fake_load_config():
-        return {
-            "default_sample": "yelp",
-            "samples": {
-                "yelp": {
-                    "bucket": "yelp-data",
-                    "scope": "_default",
-                    "collection": "_default",
-                }
-            },
-            "zeus": {"url": "http://127.0.0.1:8080"},
-            "couchbase": {
-                "query_url": "http://127.0.0.1:8093",
-                "username": "Administrator",
-                "password": "password",
-            },
-        }
+        async def verb(self, name, body, **kwargs):
+            calls.append((name, body))
+            if name == "project":
+                return verb_ok("project", {"result": {"rows": []}})
+            raise AssertionError(f"unexpected verb {name}")
 
     async def fake_n1ql(cb, bucket, scope, collection, keys, **kwargs):
         assert keys == ["biz:-4dYswJy7SPcbcERvitmIg"]
@@ -387,22 +376,18 @@ async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
             }
         ]
 
-    class FakeCB:
-        @classmethod
-        def from_mapping(cls, raw, **kw):
-            return SimpleNamespace(
-                query_url="http://127.0.0.1:8093",
-                username="Administrator",
-                password="password",
-            )
+    async def fake_runtime():
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                target=SimpleNamespace(bucket="yelp-data", scope="_default", collection="_default"),
+                settings=SimpleNamespace(mode="analytics"),
+            ),
+            data=Data(),
+        )
 
-    import local_guide.detail as detail_mod
-
-    monkeypatch.setattr(detail_mod, "load_config", fake_load_config)
-    monkeypatch.setattr(detail_mod, "run_verb_from_config", fake_run_verb_from_config)
-    monkeypatch.setattr(detail_mod, "resolve_zeus_config", lambda cfg: cfg.get("zeus") or {})
-    monkeypatch.setattr(detail_mod, "CouchbaseQueryConfig", FakeCB)
-    monkeypatch.setattr(detail_mod, "n1ql_hydrate_keys", fake_n1ql)
+    monkeypatch.setenv("COUCHBASE_QUERY_URL", "http://127.0.0.1:8093")
+    monkeypatch.setattr("local_guide.detail.get_runtime", fake_runtime)
+    monkeypatch.setattr("local_guide.detail.n1ql_hydrate_keys", fake_n1ql)
 
     out = await fetch_business_via_find("biz:-4dYswJy7SPcbcERvitmIg")
     assert calls and calls[0][0] == "find"
@@ -419,21 +404,24 @@ async def test_fetch_business_via_find_uses_find_verb(monkeypatch):
 async def test_fetch_business_reviews_uses_find_verb(monkeypatch):
     calls: list[tuple] = []
 
-    class FakeVerb:
-        def __init__(self, ok=True, body=None, status=200, req_id="r1", error=""):
-            self.ok = ok
-            self.body = body
-            self.status = status
-            self.req_id = req_id
-            self.error = error
+    def verb_ok(name: str, body: dict) -> VerbResult:
+        return VerbResult(
+            verb=name,
+            ok=True,
+            status_code=200,
+            req_id="r1",
+            body=body,
+            error=None,
+        )
 
-    async def fake_run_verb_from_config(verb, args, cfg, **kwargs):
-        calls.append((verb, args))
-        if verb == "find":
-            assert args["entity_type"] == "Review"
-            assert args["where"]["business_id"] == "bdth7r1brx9yRU7sYwF9jQ"
-            return FakeVerb(
-                body={
+    class Data:
+        async def find(self, body, **kwargs):
+            calls.append(("find", body))
+            assert body["entity_type"] == "Review"
+            assert body["where"]["business_id"] == "bdth7r1brx9yRU7sYwF9jQ"
+            return verb_ok(
+                "find",
+                {
                     "result": {
                         "node_ids": ["file::aaa"],
                         "items": [
@@ -444,29 +432,14 @@ async def test_fetch_business_reviews_uses_find_verb(monkeypatch):
                             }
                         ],
                     }
-                }
+                },
             )
-        if verb == "project":
-            return FakeVerb(body={"result": {"rows": []}})
-        raise AssertionError(f"unexpected verb {verb}")
 
-    async def fake_load_config():
-        return {
-            "default_sample": "yelp",
-            "samples": {
-                "yelp": {
-                    "bucket": "yelp-data",
-                    "scope": "_default",
-                    "collection": "_default",
-                }
-            },
-            "zeus": {"url": "http://127.0.0.1:8080"},
-            "couchbase": {
-                "query_url": "http://127.0.0.1:8093",
-                "username": "Administrator",
-                "password": "password",
-            },
-        }
+        async def verb(self, name, body, **kwargs):
+            calls.append((name, body))
+            if name == "project":
+                return verb_ok("project", {"result": {"rows": []}})
+            raise AssertionError(f"unexpected verb {name}")
 
     async def fake_n1ql(cb, bucket, scope, collection, keys, **kwargs):
         assert bucket == "yelp-data"
@@ -498,22 +471,18 @@ async def test_fetch_business_reviews_uses_find_verb(monkeypatch):
             ]
         return []
 
-    class FakeCB:
-        @classmethod
-        def from_mapping(cls, raw, **kw):
-            return SimpleNamespace(
-                query_url="http://127.0.0.1:8093",
-                username="Administrator",
-                password="password",
-            )
+    async def fake_runtime():
+        return SimpleNamespace(
+            config=SimpleNamespace(
+                target=SimpleNamespace(bucket="yelp-data", scope="_default", collection="_default"),
+                settings=SimpleNamespace(mode="analytics"),
+            ),
+            data=Data(),
+        )
 
-    import local_guide.detail as detail_mod
-
-    monkeypatch.setattr(detail_mod, "load_config", fake_load_config)
-    monkeypatch.setattr(detail_mod, "run_verb_from_config", fake_run_verb_from_config)
-    monkeypatch.setattr(detail_mod, "resolve_zeus_config", lambda cfg: cfg.get("zeus") or {})
-    monkeypatch.setattr(detail_mod, "CouchbaseQueryConfig", FakeCB)
-    monkeypatch.setattr(detail_mod, "n1ql_hydrate_keys", fake_n1ql)
+    monkeypatch.setenv("COUCHBASE_QUERY_URL", "http://127.0.0.1:8093")
+    monkeypatch.setattr("local_guide.detail.get_runtime", fake_runtime)
+    monkeypatch.setattr("local_guide.detail.n1ql_hydrate_keys", fake_n1ql)
 
     out = await fetch_business_reviews("biz:bdth7r1brx9yRU7sYwF9jQ", limit=5)
     assert calls and calls[0][0] == "find"
