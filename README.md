@@ -18,25 +18,26 @@ Home and Explore search goes through `frontend/src/api/client.ts` to `POST /api/
 
 ## Prerequisites
 
-- Node.js 20+
+- Docker with BuildKit
+- Sibling checkout `../zeus_client_python` (the Compose backend build context is the parent directory)
+- `config.json` in this directory as a file
+- A `.env` file with `LLM_API_KEY` and `ZEUS_PASSWORD`
 
 ## Quick start
 
-```bash
-cd demo_yelp/frontend
-npm install
-npm run dev
-```
-
-Open http://localhost:5173. Vite proxies `/api` and `/static` to `VITE_API_PROXY`, or to `http://127.0.0.1:5000` when that variable is unset.
-
-Production build:
+Reload, the frontend rebuild, and the Vite dev profile are in [`AGENTS.md`](AGENTS.md).
 
 ```bash
-cd demo_yelp/frontend
-npm run build   # output in frontend/dist
-npm run preview
+cd demo_yelp
+[ -f .env ] || cp .env.example .env   # leaves an existing .env in place
+# set LLM_API_KEY and ZEUS_PASSWORD in .env when the file is new
+DOCKER_BUILDKIT=1 docker compose up -d --build
 ```
+
+- nginx UI: http://localhost:3000
+- API: http://localhost:5000
+
+`docker compose logs -f` follows the containers.
 
 ## Example queries
 
@@ -90,24 +91,13 @@ nginx still proxies `/api/` and `/static/` to `BACKEND_UPSTREAM`. Home, Explore,
 | `BACKEND_UPSTREAM` | `http://backend:5000` | nginx `proxy_pass` target (no trailing slash) |
 | `NGINX_ENVSUBST_FILTER` | `BACKEND_` | Limit envsubst to backend knobs |
 
-`docker-compose.yml` also starts the Python API on host port **5000** and the nginx UI on host port **3000**. Home, Explore, and Ask AI on that UI call the API. Business detail stays on the bundled catalog. Compose bind-mounts `./.env` read-only (no `env_file`, so a `$` in `ZEUS_PASSWORD` stays literal) and still expects a sibling `../zeus_client_python` checkout because the backend image installs `kotenai-zeus-client`. The optional `dev` profile runs Vite on **5173** and proxies `/api` and `/static` to `VITE_API_PROXY` (`http://backend:5000` in Compose), so Home and Explore search the live Zeus catalog there too.
-
-```bash
-# UI image only — see docker build above.
-
-# Full compose stack (Zeus API + nginx UI)
-cp .env.example .env   # set LLM_API_KEY and ZEUS_PASSWORD; do not put them in config.json
-DOCKER_BUILDKIT=1 docker compose up --build
-```
-
-- nginx UI: http://localhost:3000
-- API (Ask AI): http://localhost:5000
-- Vite profile `dev`: http://localhost:5173
+Compose start, API reload, and the Vite dev profile are in [`AGENTS.md`](AGENTS.md).
 
 ## Project layout
 
 ```text
 demo_yelp/
+├── AGENTS.md                 # coding agents run the app with Docker Compose
 ├── frontend/                 # React SPA, catalog, and photos
 │   ├── src/data/catalog.json
 │   ├── src/api/client.ts     # Zeus search, sample reviews, insight
@@ -141,19 +131,7 @@ Home, Explore, and Ask AI call the agent. Open the SPA with `?debug=true` (`1`, 
 
 The script URL is `https://koten-static-cdn.nyc3.cdn.digitaloceanspaces.com/zeus_client_chat_trace/latest/zeus_client_chat_trace.js`. `scripts/vendor_trace.sh` is an obsolete stub and exits with an error. The bundle is not vendored into `src/local_guide/static/`.
 
-`config.json` is committed and secret-free. Copy `.env.example` to `.env`, then set `LLM_API_KEY` and `ZEUS_PASSWORD`. Do not put the API key or the Zeus password in `config.json`. The file stores env **names** (`zeus.password_env` = `ZEUS_PASSWORD`, `llm.api_key_env` = `LLM_API_KEY`) and sentinels (`zeus.auth_mode` = `ZEUS_AUTH_MODE`, `zeus.username` = `ZEUS_USERNAME`, `settings.mode` = `ZEUS_MODE`, `llm.base_url` = `LLM_BASE_URL`, `llm.model` = `LLM_MODEL`). The data target is `yelp-demo` / `_default` / `_default`.
-
-To run the API anyway:
-
-```bash
-cd demo_yelp
-cp .env.example .env
-# set LLM_API_KEY and ZEUS_PASSWORD in .env
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ../zeus_client_python
-pip install -e ".[dev]" --no-deps
-python -m local_guide    # http://localhost:5000
-```
+`config.json` is committed and secret-free. Copy `.env.example` to `.env` when `.env` is absent (`[ -f .env ] || cp .env.example .env`), then set `LLM_API_KEY` and `ZEUS_PASSWORD`. An existing `.env` stays as it is. Do not put the API key or the Zeus password in `config.json`. The file stores env **names** (`zeus.password_env` = `ZEUS_PASSWORD`, `llm.api_key_env` = `LLM_API_KEY`) and sentinels (`zeus.auth_mode` = `ZEUS_AUTH_MODE`, `zeus.username` = `ZEUS_USERNAME`, `settings.mode` = `ZEUS_MODE`, `llm.base_url` = `LLM_BASE_URL`, `llm.model` = `LLM_MODEL`). The data target is `yelp-demo` / `_default` / `_default`.
 
 | Name | Description |
 |------|-------------|
@@ -168,13 +146,43 @@ python -m local_guide    # http://localhost:5000
 | `LLM_API_KEY` | Required for agent turns. Set it in `.env`, not in `config.json` |
 | `COUCHBASE_QUERY_URL` / `COUCHBASE_USERNAME` / `COUCHBASE_PASSWORD` | N1QL hydrate for suggest and business detail |
 
-```bash
-pytest -q
-```
-
 | Symptom | Fix |
 |---------|-----|
 | `no Zeus URL configured` | Set `ZEUS_URL` |
 | `LLM_API_KEY is not set` | Set `LLM_API_KEY` in `.env` |
 | Docker API cannot reach Zeus | Use `host.docker.internal` |
 | SPA has no photos | Files belong under `frontend/public/business-images/biz:<id>/{1,2,3}.png` |
+
+## Host processes
+
+Use these when Compose is not the process under test. `pytest` stays here: the API image does not install pytest, and Compose does not mount `tests/`.
+
+```bash
+cd demo_yelp
+[ -f .env ] || cp .env.example .env
+# set LLM_API_KEY and ZEUS_PASSWORD in .env when the file is new
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ../zeus_client_python
+pip install -e ".[dev]" --no-deps
+pytest -q
+```
+
+```bash
+cd demo_yelp
+source .venv/bin/activate
+python -m local_guide    # http://localhost:5000
+```
+
+Host SPA (Node.js 20+). Vite proxies `/api` and `/static` to `VITE_API_PROXY`, or to `http://127.0.0.1:5000` when that variable is unset.
+
+```bash
+cd demo_yelp/frontend
+npm install
+npm run dev       # http://localhost:5173
+```
+
+```bash
+cd demo_yelp/frontend
+npm run build     # output in frontend/dist
+npm run preview
+```
